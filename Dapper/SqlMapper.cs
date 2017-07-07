@@ -376,6 +376,12 @@ namespace Dapper
             handler = null;
             var nullUnderlyingType = Nullable.GetUnderlyingType(type);
             if (nullUnderlyingType != null) type = nullUnderlyingType;
+            // Inicio
+            if (typeHandlers.TryGetValue(type, out handler))
+            {
+                return DbType.Object;
+            }
+            // Fim
             if (type.IsEnum() && !typeMap.ContainsKey(type))
             {
                 type = Enum.GetUnderlyingType(type);
@@ -388,10 +394,12 @@ namespace Dapper
             {
                 return DbType.Binary;
             }
+            /* Inicio
             if (typeHandlers.TryGetValue(type, out handler))
             {
                 return DbType.Object;
             }
+            Fim*/
             if (typeof(IEnumerable).IsAssignableFrom(type))
             {
                 return DynamicParameters.EnumerableMultiParameter;
@@ -1770,14 +1778,22 @@ namespace Dapper
             {
                 return GetDapperRowDeserializer(reader, startBound, length, returnNullIfFirstMissing);
             }
+            // Inicio
+            if (typeHandlers.TryGetValue(type, out ITypeHandler handler))
+            {
+                return GetHandlerDeserializer(handler, type, startBound);
+            }
+            // Fim
             Type underlyingType = null;
             if (!(typeMap.ContainsKey(type) || type.IsEnum() || type.FullName == LinqBinary
                 || (type.IsValueType() && (underlyingType = Nullable.GetUnderlyingType(type)) != null && underlyingType.IsEnum())))
             {
+                /*Inicio
                 if (typeHandlers.TryGetValue(type, out ITypeHandler handler))
                 {
                     return GetHandlerDeserializer(handler, type, startBound);
                 }
+                Fim*/
                 return GetTypeDeserializer(type, reader, startBound, length, returnNullIfFirstMissing);
             }
             return GetStructDeserializer(type, underlyingType ?? type, startBound);
@@ -2884,6 +2900,16 @@ namespace Dapper
         private static Func<IDataReader, object> GetStructDeserializer(Type type, Type effectiveType, int index)
         {
             // no point using special per-type handling here; it boils down to the same, plus not all are supported anyway (see: SqlDataReader.GetChar - not supported!)
+            // Inicio
+            if (typeHandlers.TryGetValue(type, out ITypeHandler handler))
+            {
+                return r =>
+                {
+                    var val = r.GetValue(index);
+                    return val is DBNull ? null : handler.Parse(type, val);
+                };
+            }
+            // Fim
 #pragma warning disable 618
             if (type == typeof(char))
             { // this *does* need special handling, though
@@ -2911,6 +2937,7 @@ namespace Dapper
                     return val is DBNull ? null : Enum.ToObject(effectiveType, val);
                 };
             }
+            /*Inicio
             if (typeHandlers.TryGetValue(type, out ITypeHandler handler))
             {
                 return r =>
@@ -2919,6 +2946,7 @@ namespace Dapper
                     return val is DBNull ? null : handler.Parse(type, val);
                 };
             }
+            Fim*/
             return r =>
             {
                 var val = r.GetValue(index);
@@ -2932,6 +2960,12 @@ namespace Dapper
             if (value is T) return (T)value;
             var type = typeof(T);
             type = Nullable.GetUnderlyingType(type) ?? type;
+            // Inicio
+            if (typeHandlers.TryGetValue(type, out ITypeHandler handler))
+            {
+                return (T)handler.Parse(type, value);
+            }
+            // Fim
             if (type.IsEnum())
             {
                 if (value is float || value is double || value is decimal)
@@ -2940,10 +2974,12 @@ namespace Dapper
                 }
                 return (T)Enum.ToObject(type, value);
             }
+            /* Inicio
             if (typeHandlers.TryGetValue(type, out ITypeHandler handler))
             {
                 return (T)handler.Parse(type, value);
             }
+            Fim*/
             return (T)Convert.ChangeType(value, type, CultureInfo.InvariantCulture);
         }
 
@@ -3192,7 +3228,24 @@ namespace Dapper
                     Type colType = reader.GetFieldType(index);
                     Type memberType = item.MemberType;
 
-                    if (memberType == typeof(char) || memberType == typeof(char?))
+                    // if (memberType == typeof(char) || memberType == typeof(char?)) Substituido por
+                    // unbox nullable enums as the primitive, i.e. byte etc
+                    var nullUnderlyingType = Nullable.GetUnderlyingType(memberType);
+                    var unboxType = nullUnderlyingType != null && nullUnderlyingType.IsEnum() ? nullUnderlyingType : memberType;
+
+                    bool hasTypeHandler = typeHandlers.ContainsKey(unboxType);
+
+                    if (hasTypeHandler)
+                    {
+                        il.Emit(OpCodes.Dup); // stack is now [target][target][value][value]
+                        il.Emit(OpCodes.Isinst, typeof(DBNull)); // stack is now [target][target][value-as-object][DBNull or null]
+                        il.Emit(OpCodes.Brtrue_S, isDbNullLabel); // stack is now [target][target][value-as-object]
+#pragma warning disable 618
+                        il.EmitCall(OpCodes.Call, typeof(TypeHandlerCache<>).MakeGenericType(unboxType).GetMethod(nameof(TypeHandlerCache<int>.Parse)), null); // stack is now [target][target][typed-value]
+#pragma warning restore 618
+                    }
+                    else if (memberType == typeof(char) || memberType == typeof(char?))
+                    // Fim
                     {
                         il.EmitCall(OpCodes.Call, typeof(SqlMapper).GetMethod(
                             memberType == typeof(char) ? nameof(SqlMapper.ReadChar) : nameof(SqlMapper.ReadNullableChar), BindingFlags.Static | BindingFlags.Public), null); // stack is now [target][target][typed-value]
@@ -3203,11 +3256,12 @@ namespace Dapper
                         il.Emit(OpCodes.Isinst, typeof(DBNull)); // stack is now [target][target][value-as-object][DBNull or null]
                         il.Emit(OpCodes.Brtrue_S, isDbNullLabel); // stack is now [target][target][value-as-object]
 
+                        /*Inicio
                         // unbox nullable enums as the primitive, i.e. byte etc
 
                         var nullUnderlyingType = Nullable.GetUnderlyingType(memberType);
                         var unboxType = nullUnderlyingType?.IsEnum() == true ? nullUnderlyingType : memberType;
-
+                        Fim*/
                         if (unboxType.IsEnum())
                         {
                             Type numericType = Enum.GetUnderlyingType(unboxType);
@@ -3244,9 +3298,13 @@ namespace Dapper
                         else
                         {
                             TypeCode dataTypeCode = TypeExtensions.GetTypeCode(colType), unboxTypeCode = TypeExtensions.GetTypeCode(unboxType);
+                            /*Substituido por
                             bool hasTypeHandler;
-                            if ((hasTypeHandler = typeHandlers.ContainsKey(unboxType)) || colType == unboxType || dataTypeCode == unboxTypeCode || dataTypeCode == TypeExtensions.GetTypeCode(nullUnderlyingType))
+                            if ((hasTypeHandler = typeHandlers.ContainsKey(unboxType)) || colType == unboxType || dataTypeCode == unboxTypeCode || dataTypeCode == TypeExtensions.GetTypeCode(nullUnderlyingType))*/
+                            if (colType == unboxType || dataTypeCode == unboxTypeCode || dataTypeCode == TypeExtensions.GetTypeCode(nullUnderlyingType))
+                            // Fim
                             {
+                                /*Inicio
                                 if (hasTypeHandler)
                                 {
 #pragma warning disable 618
@@ -3257,6 +3315,9 @@ namespace Dapper
                                 {
                                      il.Emit(OpCodes.Unbox_Any, unboxType); // stack is now [target][target][typed-value]
                                 }
+                                */
+                                il.Emit(OpCodes.Unbox_Any, unboxType); // stack is now [target][target][typed-value]
+                                // Fim
                             }
                             else
                             {
