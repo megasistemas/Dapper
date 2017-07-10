@@ -40,10 +40,6 @@ Write-Host "CreatePackages: $CreatePackages"
 Write-Host "RunTests: $RunTests"
 Write-Host "Base Version: $(CalculateVersion)"
 
-$Version = 2
-$CreatePackages = $true
-$RunTests = $false
-
 $packageOutputFolder = "$PSScriptRoot\.nupkgs"
 $projectsToBuild =
     'Dapper',
