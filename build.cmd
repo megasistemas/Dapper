@@ -1,2 +1,2 @@
 @ECHO OFF
-PowerShell -NoProfile -NoLogo -ExecutionPolicy unrestricted -Command "[System.Threading.Thread]::CurrentThread.CurrentCulture = ''; [System.Threading.Thread]::CurrentThread.CurrentUICulture = '';& '%~dp0build.ps1' -Version 2.0 -CreatePackages 1 -RunTests 0 %*; exit $LASTEXITCODE"
+PowerShell -NoProfile -NoLogo -ExecutionPolicy unrestricted -Command "[System.Threading.Thread]::CurrentThread.CurrentCulture = ''; [System.Threading.Thread]::CurrentThread.CurrentUICulture = '';& '%~dp0build.ps1' -Version 1.9-beta1 -CreatePackages 1 -RunTests 0 %*; exit $LASTEXITCODE"
