@@ -1,22 +1,20 @@
-﻿#if POSTGRESQL
-using System;
+﻿using System;
 using System.Data;
+using System.Data.Common;
 using System.Linq;
 using Xunit;
 
 namespace Dapper.Tests
 {
-    public class PostcresqlTests : TestBase
+    public class PostgresProvider : DatabaseProvider
     {
-        private static Npgsql.NpgsqlConnection GetOpenNpgsqlConnection()
-        {
-            string cs = IsAppVeyor
-                ? "Server=localhost;Port=5432;User Id=postgres;Password=Password12!;Database=test"
-                : "Server=localhost;Port=5432;User Id=dappertest;Password=dapperpass;Database=dappertest"; // ;Encoding = UNICODE
-            var conn = new Npgsql.NpgsqlConnection(cs);
-            conn.Open();
-            return conn;
-        }
+        public override DbProviderFactory Factory => Npgsql.NpgsqlFactory.Instance;
+        public override string GetConnectionString() =>
+            GetConnectionString("PostgesConnectionString", "Server=localhost;Port=5432;User Id=dappertest;Password=dapperpass;Database=dappertest");
+    }
+    public class PostgresqlTests : TestBase<PostgresProvider>
+    {
+        private Npgsql.NpgsqlConnection GetOpenNpgsqlConnection() => (Npgsql.NpgsqlConnection)Provider.GetOpenConnection();
 
         private class Cat
         {
@@ -49,14 +47,37 @@ namespace Dapper.Tests
                 conn.Execute("insert into tcat(breed, name) values(:breed, :name) ", Cats);
 
                 var r = conn.Query<Cat>("select * from tcat where id=any(:catids)", new { catids = new[] { 1, 3, 5 } });
-                r.Count().IsEqualTo(3);
-                r.Count(c => c.Id == 1).IsEqualTo(1);
-                r.Count(c => c.Id == 3).IsEqualTo(1);
-                r.Count(c => c.Id == 5).IsEqualTo(1);
+                Assert.Equal(3, r.Count());
+                Assert.Equal(1, r.Count(c => c.Id == 1));
+                Assert.Equal(1, r.Count(c => c.Id == 3));
+                Assert.Equal(1, r.Count(c => c.Id == 5));
                 transaction.Rollback();
             }
         }
 
+        private class CharTable
+        {
+            public int Id { get; set; }
+            public char CharColumn { get; set; }
+        }
+
+        [FactPostgresql]
+        public void TestPostgresqlChar()
+        {
+            using (var conn = GetOpenNpgsqlConnection())
+            {
+                var transaction = conn.BeginTransaction();
+                conn.Execute("create table chartable (id serial not null, charcolumn \"char\" not null);");
+                conn.Execute("insert into chartable(charcolumn) values('a');");
+
+                var r = conn.Query<CharTable>("select * from chartable");
+                Assert.Single(r);
+                Assert.Equal('a', r.Single().CharColumn);
+                transaction.Rollback();
+            }
+        }
+
+        [AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
         public class FactPostgresqlAttribute : FactAttribute
         {
             public override string Skip
@@ -71,7 +92,7 @@ namespace Dapper.Tests
             {
                 try
                 {
-                    using (GetOpenNpgsqlConnection()) { /* just trying to see if it works */ }
+                    using (DatabaseProvider<PostgresProvider>.Instance.GetOpenConnection()) { /* just trying to see if it works */ }
                 }
                 catch (Exception ex)
                 {
@@ -81,4 +102,3 @@ namespace Dapper.Tests
         }
     }
 }
-#endif

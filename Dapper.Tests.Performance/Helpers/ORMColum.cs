@@ -1,4 +1,6 @@
-﻿using BenchmarkDotNet.Columns;
+﻿using System.ComponentModel;
+using System.Reflection;
+using BenchmarkDotNet.Columns;
 using BenchmarkDotNet.Reports;
 using BenchmarkDotNet.Running;
 
@@ -8,11 +10,16 @@ namespace Dapper.Tests.Performance.Helpers
     {
         public string Id => nameof(ORMColum);
         public string ColumnName { get; } = "ORM";
-        public string Legend => "The object relational mapper being tested";
+        public string Legend => "The object/relational mapper being tested";
 
-        public bool IsDefault(Summary summary, Benchmark benchmark) => false;
-        public string GetValue(Summary summary, Benchmark benchmark) => benchmark.Target.Method.DeclaringType.Name.Replace("Benchmarks", string.Empty);
-        public string GetValue(Summary summary, Benchmark benchmark, ISummaryStyle style) => benchmark.Target.Method.DeclaringType.Name.Replace("Benchmarks", string.Empty);
+        public bool IsDefault(Summary summary, BenchmarkCase benchmarkCase) => false;
+        public string GetValue(Summary summary, BenchmarkCase benchmarkCase)
+        {
+            var type = benchmarkCase.Descriptor.WorkloadMethod.DeclaringType;
+            return type.GetCustomAttribute<DescriptionAttribute>()?.Description ?? type.Name.Replace("Benchmarks", string.Empty);
+        }
+
+        public string GetValue(Summary summary, BenchmarkCase benchmarkCase, SummaryStyle style) => GetValue(summary, benchmarkCase);
 
         public bool IsAvailable(Summary summary) => true;
         public bool AlwaysShow => true;

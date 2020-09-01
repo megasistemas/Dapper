@@ -7,7 +7,13 @@ using Xunit;
 
 namespace Dapper.Tests
 {
-    public class TransactionTests : TestBase
+    [Collection("TransactionTests")]
+    public sealed class SystemSqlClientTransactionTests : TransactionTests<SystemSqlClientProvider> { }
+#if MSSQLCLIENT
+    [Collection("TransactionTests")]
+    public sealed class MicrosoftSqlClientTransactionTests : TransactionTests<MicrosoftSqlClientProvider> { }
+#endif
+    public abstract class TransactionTests<TProvider> : TestBase<TProvider> where TProvider : DatabaseProvider
     {
         [Fact]
         public void TestTransactionCommit()
@@ -23,7 +29,7 @@ namespace Dapper.Tests
                     transaction.Commit();
                 }
 
-                connection.Query<int>("select count(*) from #TransactionTest;").Single().IsEqualTo(1);
+                Assert.Equal(1, connection.Query<int>("select count(*) from #TransactionTest;").Single());
             }
             finally
             {
@@ -45,7 +51,7 @@ namespace Dapper.Tests
                     transaction.Rollback();
                 }
 
-                connection.Query<int>("select count(*) from #TransactionTest;").Single().IsEqualTo(0);
+                Assert.Equal(0, connection.Query<int>("select count(*) from #TransactionTest;").Single());
             }
             finally
             {
@@ -69,7 +75,7 @@ namespace Dapper.Tests
                     transaction.Rollback();
                 }
 
-                connection.Query<int>("select count(*) from #TransactionTest;").Single().IsEqualTo(0);
+                Assert.Equal(0, connection.Query<int>("select count(*) from #TransactionTest;").Single());
             }
             finally
             {

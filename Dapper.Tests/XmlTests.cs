@@ -4,7 +4,13 @@ using Xunit;
 
 namespace Dapper.Tests
 {
-    public class XmlTests : TestBase
+    [Collection("XmlTests")]
+    public sealed class SystemSqlClientXmlTests : XmlTests<SystemSqlClientProvider> { }
+#if MSSQLCLIENT
+    [Collection("XmlTests")]
+    public sealed class MicrosoftSqlClientXmlTests : XmlTests<MicrosoftSqlClientProvider> { }
+#endif
+    public abstract class XmlTests<TProvider> : TestBase<TProvider> where TProvider : DatabaseProvider
     {
         [Fact]
         public void CommonXmlTypesSupported()
@@ -19,9 +25,9 @@ namespace Dapper.Tests
                 C = XElement.Parse("<ghi/>")
             };
             var bar = connection.QuerySingle<Foo>("select @a as [A], @b as [B], @c as [C]", new { a = foo.A, b = foo.B, c = foo.C });
-            bar.A.DocumentElement.Name.IsEqualTo("abc");
-            bar.B.Root.Name.LocalName.IsEqualTo("def");
-            bar.C.Name.LocalName.IsEqualTo("ghi");
+            Assert.Equal("abc", bar.A.DocumentElement.Name);
+            Assert.Equal("def", bar.B.Root.Name.LocalName);
+            Assert.Equal("ghi", bar.C.Name.LocalName);
         }
 
         public class Foo

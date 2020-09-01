@@ -1,24 +1,22 @@
 ﻿#if OLEDB
 using System;
+using System.Data.Common;
 using System.Data.OleDb;
 using System.Linq;
 using Xunit;
 
 namespace Dapper.Tests
 {
-    public class OLDEBTests : TestBase
+    public class OLEDBProvider : DatabaseProvider
     {
-        public static string OleDbConnectionString =>
-            IsAppVeyor
-                ? @"Provider=SQLOLEDB;Data Source=(local)\SQL2016;Initial Catalog=tempdb;User Id=sa;Password=Password12!"
-                : "Provider=SQLOLEDB;Data Source=.;Initial Catalog=tempdb;Integrated Security=SSPI";
+        public override DbProviderFactory Factory => OleDbFactory.Instance;
+        public override string GetConnectionString() =>
+            GetConnectionString("OLEDBConnectionString", "Provider=SQLOLEDB;Data Source=.;Initial Catalog=tempdb;Integrated Security=SSPI");
+    }
 
-        public OleDbConnection GetOleDbConnection()
-        {
-            var conn = new OleDbConnection(OleDbConnectionString);
-            conn.Open();
-            return conn;
-        }
+    public class OLDEBTests : TestBase<OLEDBProvider>
+    {
+        public OleDbConnection GetOleDbConnection() => (OleDbConnection) Provider.GetOpenConnection();
 
         // see https://stackoverflow.com/q/18847510/23354
         [Fact]
@@ -31,8 +29,8 @@ namespace Dapper.Tests
                 ).Single();
                 int age = row.Age;
                 int id = row.Id;
-                age.IsEqualTo(23);
-                id.IsEqualTo(12);
+                Assert.Equal(23, age);
+                Assert.Equal(12, id);
             }
         }
 
@@ -42,7 +40,7 @@ namespace Dapper.Tests
             using (var connection = GetOleDbConnection())
             {
                 int value = connection.Query<int>("select ?x? + ?y_2? + ?z?", new { x = 1, y_2 = 3, z = 5, z2 = 24 }).Single();
-                value.IsEqualTo(9);
+                Assert.Equal(9, value);
             }
         }
 
@@ -67,7 +65,7 @@ namespace Dapper.Tests
                 args.Add("z", 5);
                 args.Add("z2", 24);
                 int value = connection.Query<int>("select ?x? + ?y_2? + ?z?", args).Single();
-                value.IsEqualTo(9);
+                Assert.Equal(9, value);
             }
         }
 
@@ -76,15 +74,24 @@ namespace Dapper.Tests
         {
             using (var connection = GetOleDbConnection())
             {
-                try
-                {
-                    int value = connection.Query<int>("select ?x? + ?y_2? + ?x?", new { x = 1, y_2 = 3 }).Single();
-                    Assert.Fail();
-                }
-                catch (InvalidOperationException ex)
-                {
-                    ex.Message.IsEqualTo("When passing parameters by position, each parameter can only be referenced once");
-                }
+                var ex = Assert.Throws<InvalidOperationException>(() => connection.Query<int>("select ?x? + ?y_2? + ?x?", new { x = 1, y_2 = 3 }).Single());
+                Assert.Equal("When passing parameters by position, each parameter can only be referenced once", ex.Message);
+            }
+        }
+
+        [Fact]
+        public void Issue569_SO38527197_PseudoPositionalParameters_In_And_Other_Condition()
+        {
+            const string sql = @"select s1.value as id, s2.value as score 
+                        from string_split('1,2,3,4,5',',') s1, string_split('1,2,3,4,5',',') s2
+                        where s1.value in ?ids? and s2.value = ?score?";
+            using (var connection = GetOleDbConnection())
+            {
+                const int score = 2;
+                int[] ids = { 1, 2, 5, 7 };
+                var list = connection.Query<int>(sql, new { ids, score }).AsList();
+                list.Sort();
+                Assert.Equal("1,2,5", string.Join(",", list));
             }
         }
 
@@ -96,7 +103,7 @@ namespace Dapper.Tests
                 int[] ids = { 1, 2, 5, 7 };
                 var list = connection.Query<int>("select * from string_split('1,2,3,4,5',',') where value in ?ids?", new { ids }).AsList();
                 list.Sort();
-                string.Join(",", list).IsEqualTo("1,2,5");
+                Assert.Equal("1,2,5", string.Join(",", list));
             }
         }
 
@@ -109,8 +116,8 @@ namespace Dapper.Tests
                 var row = connection.QuerySingle("declare @id int = ?id?; select @id as [A], @id as [B];", new { id });
                 int a = (int)row.A;
                 int b = (int)row.B;
-                a.IsEqualTo(42);
-                b.IsEqualTo(42);
+                Assert.Equal(42, a);
+                Assert.Equal(42, b);
             }
         }
 
@@ -119,16 +126,12 @@ namespace Dapper.Tests
         {
             using (var connection = GetOleDbConnection())
             {
-                try
+                var ex = Assert.Throws<InvalidOperationException>(() =>
                 {
                     const int id = 42;
-                    var row = connection.QuerySingle("select ?id? as [A], ?id? as [B];", new { id });
-                    Assert.Fail();
-                }
-                catch (InvalidOperationException ex) when (ex.Message == "When passing parameters by position, each parameter can only be referenced once")
-                {
-                    // that's a win
-                }
+                    connection.QuerySingle("select ?id? as [A], ?id? as [B];", new { id });
+                });
+                Assert.Equal("When passing parameters by position, each parameter can only be referenced once", ex.Message);
             }
         }
 
@@ -141,8 +144,8 @@ namespace Dapper.Tests
                 connection.Execute("create table #named_single(val int not null)");
                 int count = connection.Execute("insert #named_single (val) values (?x?)", data);
                 int sum = (int)connection.ExecuteScalar("select sum(val) from #named_single");
-                count.IsEqualTo(1);
-                sum.IsEqualTo(6);
+                Assert.Equal(1, count);
+                Assert.Equal(6, sum);
             }
         }
 
@@ -160,8 +163,8 @@ namespace Dapper.Tests
                 connection.Execute("create table #named_multi(val int not null)");
                 int count = connection.Execute("insert #named_multi (val) values (?x?)", data);
                 int sum = (int)connection.ExecuteScalar("select sum(val) from #named_multi");
-                count.IsEqualTo(3);
-                sum.IsEqualTo(10);
+                Assert.Equal(3, count);
+                Assert.Equal(10, sum);
             }
         }
 
@@ -187,8 +190,8 @@ SELECT @since as [Since], @customerCode as [Code]";
                 var a = (DateTime?)row.Since;
                 var b = (string)row.Code;
 
-                a.IsEqualTo(since);
-                b.IsEqualTo(code);
+                Assert.Equal(since, a);
+                Assert.Equal(code, b);
             }
         }
 
@@ -214,8 +217,8 @@ SELECT @since as [Since], @customerCode as [Code]";
                 var a = (DateTime?)row.Since;
                 var b = (string)row.Code;
 
-                a.IsEqualTo(since);
-                b.IsEqualTo(code);
+                Assert.Equal(since, a);
+                Assert.Equal(code, b);
             }
         }
 
@@ -243,8 +246,8 @@ SELECT @since as [Since], @customerCode as [Code]";
                     var a = (DateTime?)row.Since;
                     var b = (string)row.Code;
 
-                    a.IsEqualTo(since);
-                    b.IsEqualTo(code);
+                    Assert.Equal(a, since);
+                    Assert.Equal(b, code);
                 }
             }
         }
@@ -273,8 +276,8 @@ SELECT @since as [Since], @customerCode as [Code]";
                     var a = (DateTime?)row.Since;
                     var b = (string)row.Code;
 
-                    a.IsEqualTo(since);
-                    b.IsEqualTo(code);
+                    Assert.Equal(a, since);
+                    Assert.Equal(b, code);
                 }
             }
         }

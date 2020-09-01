@@ -3,13 +3,13 @@ using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
-using System.Data.SqlClient;
 using System.Data.SqlTypes;
 using System.Dynamic;
 using System.Linq;
 using Xunit;
 using System.Globalization;
 using System.Text.RegularExpressions;
+using System.Diagnostics;
 
 #if ENTITY_FRAMEWORK
 using System.Data.Entity.Spatial;
@@ -18,7 +18,13 @@ using Microsoft.SqlServer.Types;
 
 namespace Dapper.Tests
 {
-    public class ParameterTests : TestBase
+    [Collection(NonParallelDefinition.Name)] // because it creates SQL types that compete between the two providers
+    public sealed class SystemSqlClientParameterTests : ParameterTests<SystemSqlClientProvider> { }
+#if MSSQLCLIENT
+    [Collection(NonParallelDefinition.Name)] // because it creates SQL types that compete between the two providers
+    public sealed class MicrosoftSqlClientParameterTests : ParameterTests<MicrosoftSqlClientProvider> { }
+#endif
+    public abstract class ParameterTests<TProvider> : TestBase<TProvider> where TProvider : DatabaseProvider
     {
         public class DbParams : SqlMapper.IDynamicParameters, IEnumerable<IDbDataParameter>
         {
@@ -37,6 +43,55 @@ namespace Dapper.Tests
             }
         }
 
+        private static IEnumerable<IDataRecord> CreateSqlDataRecordList(IDbCommand command, IEnumerable<int> numbers)
+        {
+            if (command is System.Data.SqlClient.SqlCommand) return CreateSqlDataRecordList_SD(numbers);
+            if (command is Microsoft.Data.SqlClient.SqlCommand) return CreateSqlDataRecordList_MD(numbers);
+            throw new ArgumentException(nameof(command));
+        }
+        private static IEnumerable<IDataRecord> CreateSqlDataRecordList(IDbConnection connection, IEnumerable<int> numbers)
+        {
+            if (connection is System.Data.SqlClient.SqlConnection) return CreateSqlDataRecordList_SD(numbers);
+            if (connection is Microsoft.Data.SqlClient.SqlConnection) return CreateSqlDataRecordList_MD(numbers);
+            throw new ArgumentException(nameof(connection));
+        }
+        private static List<Microsoft.SqlServer.Server.SqlDataRecord> CreateSqlDataRecordList_SD(IEnumerable<int> numbers)
+        {
+            var number_list = new List<Microsoft.SqlServer.Server.SqlDataRecord>();
+
+            // Create an SqlMetaData object that describes our table type.
+            Microsoft.SqlServer.Server.SqlMetaData[] tvp_definition = { new Microsoft.SqlServer.Server.SqlMetaData("n", SqlDbType.Int) };
+
+            foreach (int n in numbers)
+            {
+                // Create a new record, using the metadata array above.
+                var rec = new Microsoft.SqlServer.Server.SqlDataRecord(tvp_definition);
+                rec.SetInt32(0, n);    // Set the value.
+                number_list.Add(rec);      // Add it to the list.
+            }
+
+            return number_list;
+        }
+
+        private static List<Microsoft.Data.SqlClient.Server.SqlDataRecord> CreateSqlDataRecordList_MD(IEnumerable<int> numbers)
+        {
+            var number_list = new List<Microsoft.Data.SqlClient.Server.SqlDataRecord>();
+
+            // Create an SqlMetaData object that describes our table type.
+            Microsoft.Data.SqlClient.Server.SqlMetaData[] tvp_definition = { new Microsoft.Data.SqlClient.Server.SqlMetaData("n", SqlDbType.Int) };
+
+            foreach (int n in numbers)
+            {
+                // Create a new record, using the metadata array above.
+                var rec = new Microsoft.Data.SqlClient.Server.SqlDataRecord(tvp_definition);
+                rec.SetInt32(0, n);    // Set the value.
+                number_list.Add(rec);      // Add it to the list.
+            }
+
+            return number_list;
+        }
+
+
         private class IntDynamicParam : SqlMapper.IDynamicParameters
         {
             private readonly IEnumerable<int> numbers;
@@ -47,27 +102,11 @@ namespace Dapper.Tests
 
             public void AddParameters(IDbCommand command, SqlMapper.Identity identity)
             {
-                var sqlCommand = (SqlCommand)command;
-                sqlCommand.CommandType = CommandType.StoredProcedure;
+                command.CommandType = CommandType.StoredProcedure;
 
-                var number_list = new List<Microsoft.SqlServer.Server.SqlDataRecord>();
+                var number_list = CreateSqlDataRecordList(command, numbers);
 
-                // Create an SqlMetaData object that describes our table type.
-                Microsoft.SqlServer.Server.SqlMetaData[] tvp_definition = { new Microsoft.SqlServer.Server.SqlMetaData("n", SqlDbType.Int) };
-
-                foreach (int n in numbers)
-                {
-                    // Create a new record, using the metadata array above.
-                    var rec = new Microsoft.SqlServer.Server.SqlDataRecord(tvp_definition);
-                    rec.SetInt32(0, n);    // Set the value.
-                    number_list.Add(rec);      // Add it to the list.
-                }
-
-                // Add the table parameter.
-                var p = sqlCommand.Parameters.Add("ints", SqlDbType.Structured);
-                p.Direction = ParameterDirection.Input;
-                p.TypeName = "int_list_type";
-                p.Value = number_list;
+                AddStructured(command, number_list);
             }
         }
 
@@ -81,28 +120,35 @@ namespace Dapper.Tests
 
             public void AddParameter(IDbCommand command, string name)
             {
-                var sqlCommand = (SqlCommand)command;
-                sqlCommand.CommandType = CommandType.StoredProcedure;
+                command.CommandType = CommandType.StoredProcedure;
 
-                var number_list = new List<Microsoft.SqlServer.Server.SqlDataRecord>();
-
-                // Create an SqlMetaData object that describes our table type.
-                Microsoft.SqlServer.Server.SqlMetaData[] tvp_definition = { new Microsoft.SqlServer.Server.SqlMetaData("n", SqlDbType.Int) };
-
-                foreach (int n in numbers)
-                {
-                    // Create a new record, using the metadata array above.
-                    var rec = new Microsoft.SqlServer.Server.SqlDataRecord(tvp_definition);
-                    rec.SetInt32(0, n);    // Set the value.
-                    number_list.Add(rec);      // Add it to the list.
-                }
+                var number_list = CreateSqlDataRecordList(command, numbers);
 
                 // Add the table parameter.
-                var p = sqlCommand.Parameters.Add(name, SqlDbType.Structured);
+                AddStructured(command, number_list);
+            }
+        }
+
+        private static IDbDataParameter AddStructured(IDbCommand command, object value)
+        {
+            if (command is System.Data.SqlClient.SqlCommand sdcmd)
+            {
+                var p = sdcmd.Parameters.Add("integers", SqlDbType.Structured);
                 p.Direction = ParameterDirection.Input;
                 p.TypeName = "int_list_type";
-                p.Value = number_list;
+                p.Value = value;
+                return p;
             }
+            else if (command is Microsoft.Data.SqlClient.SqlCommand mdcmd)
+            {
+                var p = mdcmd.Parameters.Add("integers", SqlDbType.Structured);
+                p.Direction = ParameterDirection.Input;
+                p.TypeName = "int_list_type";
+                p.Value = value;
+                return p;
+            }
+            else
+                throw new ArgumentException(nameof(command));
         }
 
         /* TODO:
@@ -113,22 +159,20 @@ namespace Dapper.Tests
             // this test fails for now, but I would like to support a single param by parsing the sql with regex and remapping. 
 
             var first = connection.Query("select @a as a", 1).First();
-            Assert.IsEqualTo(first.a, 1);
+            Assert.Equal(first.a, 1);
         }
          * */
 
         [Fact]
         public void TestDoubleParam()
         {
-            connection.Query<double>("select @d", new { d = 0.1d }).First()
-                .IsEqualTo(0.1d);
+            Assert.Equal(0.1d, connection.Query<double>("select @d", new { d = 0.1d }).First());
         }
 
         [Fact]
         public void TestBoolParam()
         {
-            connection.Query<bool>("select @b", new { b = false }).First()
-                .IsFalse();
+            Assert.False(connection.Query<bool>("select @b", new { b = false }).First());
         }
 
         // http://code.google.com/p/dapper-dot-net/issues/detail?id=70
@@ -137,22 +181,25 @@ namespace Dapper.Tests
         [Fact]
         public void TestTimeSpanParam()
         {
-            connection.Query<TimeSpan>("select @ts", new { ts = TimeSpan.FromMinutes(42) }).First()
-                .IsEqualTo(TimeSpan.FromMinutes(42));
+            Assert.Equal(connection.Query<TimeSpan>("select @ts", new { ts = TimeSpan.FromMinutes(42) }).First(), TimeSpan.FromMinutes(42));
         }
 
         [Fact]
         public void PassInIntArray()
         {
-            connection.Query<int>("select * from (select 1 as Id union all select 2 union all select 3) as X where Id in @Ids", new { Ids = new int[] { 1, 2, 3 }.AsEnumerable() })
-             .IsSequenceEqualTo(new[] { 1, 2, 3 });
+            Assert.Equal(
+                new[] { 1, 2, 3 },
+                connection.Query<int>("select * from (select 1 as Id union all select 2 union all select 3) as X where Id in @Ids", new { Ids = new int[] { 1, 2, 3 }.AsEnumerable() })
+            );
         }
 
         [Fact]
         public void PassInEmptyIntArray()
         {
-            connection.Query<int>("select * from (select 1 as Id union all select 2 union all select 3) as X where Id in @Ids", new { Ids = new int[0] })
-             .IsSequenceEqualTo(new int[0]);
+            Assert.Equal(
+                Array.Empty<int>(),
+                connection.Query<int>("select * from (select 1 as Id union all select 2 union all select 3) as X where Id in @Ids", new { Ids = Array.Empty<int>() })
+            );
         }
 
         [Fact]
@@ -160,8 +207,8 @@ namespace Dapper.Tests
         {
             var p = new DynamicParameters(new { a = 1, b = 2 });
             p.Add("c", dbType: DbType.Int32, direction: ParameterDirection.Output);
-            connection.Execute(@"set @c = @a + @b", p);
-            p.Get<int>("@c").IsEqualTo(3);
+            connection.Execute("set @c = @a + @b", p);
+            Assert.Equal(3, p.Get<int>("@c"));
         }
 
         [Fact]
@@ -176,20 +223,20 @@ namespace Dapper.Tests
 
             // check that rows 2&3 yield guids b&c
             var guids = connection.Query<Guid>("select g from #foo where i in (2,3)").ToArray();
-            guids.Length.Equals(2);
-            guids.Contains(a).Equals(false);
-            guids.Contains(b).Equals(true);
-            guids.Contains(c).Equals(true);
-            guids.Contains(d).Equals(false);
+            Assert.Equal(2, guids.Length);
+            Assert.DoesNotContain(a, guids);
+            Assert.Contains(b, guids);
+            Assert.Contains(c, guids);
+            Assert.DoesNotContain(d, guids);
 
             // in query on the guids
             var rows = connection.Query("select * from #foo where g in @guids order by i", new { guids })
                 .Select(row => new { i = (int)row.i, g = (Guid)row.g }).ToArray();
-            rows.Length.Equals(2);
-            rows[0].i.Equals(2);
-            rows[0].g.Equals(b);
-            rows[1].i.Equals(3);
-            rows[1].g.Equals(c);
+            Assert.Equal(2, rows.Length);
+            Assert.Equal(2, rows[0].i);
+            Assert.Equal(b, rows[0].g);
+            Assert.Equal(3, rows[1].i);
+            Assert.Equal(c, rows[1].g);
         }
 
         [FactUnlessCaseSensitiveDatabase]
@@ -213,11 +260,10 @@ namespace Dapper.Tests
         public void TestMassiveStrings()
         {
             var str = new string('X', 20000);
-            connection.Query<string>("select @a", new { a = str }).First()
-                .IsEqualTo(str);
+            Assert.Equal(connection.Query<string>("select @a", new { a = str }).First(), str);
         }
 
-#if !COREFX
+
         [Fact]
         public void TestTVPWithAnonymousObject()
         {
@@ -227,10 +273,41 @@ namespace Dapper.Tests
                 connection.Execute("CREATE PROC get_ints @integers int_list_type READONLY AS select * from @integers");
 
                 var nums = connection.Query<int>("get_ints", new { integers = new IntCustomParam(new int[] { 1, 2, 3 }) }, commandType: CommandType.StoredProcedure).ToList();
-                nums[0].IsEqualTo(1);
-                nums[1].IsEqualTo(2);
-                nums[2].IsEqualTo(3);
-                nums.Count.IsEqualTo(3);
+                Assert.Equal(1, nums[0]);
+                Assert.Equal(2, nums[1]);
+                Assert.Equal(3, nums[2]);
+                Assert.Equal(3, nums.Count);
+            }
+            finally
+            {
+                try
+                {
+                    connection.Execute("DROP PROC get_ints");
+                }
+                finally
+                {
+                    connection.Execute("DROP TYPE int_list_type");
+                }
+            }
+        }
+
+        [Fact]
+        public void TestTVPWithAnonymousEmptyObject()
+        {
+            try
+            {
+                connection.Execute("CREATE TYPE int_list_type AS TABLE (n int NOT NULL PRIMARY KEY)");
+                connection.Execute("CREATE PROC get_ints @integers int_list_type READONLY AS select * from @integers");
+
+                var nums = connection.Query<int>("get_ints", new { integers = new IntCustomParam(new int[] { }) }, commandType: CommandType.StoredProcedure).ToList();
+                Assert.Equal(1, nums[0]);
+                Assert.Equal(2, nums[1]);
+                Assert.Equal(3, nums[2]);
+                Assert.Equal(3, nums.Count);
+            }
+            catch (ArgumentException ex)
+            {
+                Assert.True(string.Compare(ex.Message, "There are no records in the SqlDataRecord enumeration. To send a table-valued parameter with no rows, use a null reference for the value instead.") == 0);
             }
             finally
             {
@@ -252,23 +329,23 @@ namespace Dapper.Tests
             try
             {
                 connection.Execute("CREATE TYPE int_list_type AS TABLE (n int NOT NULL PRIMARY KEY)");
-                connection.Execute("CREATE PROC get_ints @ints int_list_type READONLY AS select * from @ints");
+                connection.Execute("CREATE PROC get_ints @integers int_list_type READONLY AS select * from @integers");
 
                 var nums = connection.Query<int>("get_ints", new IntDynamicParam(new int[] { 1, 2, 3 })).ToList();
-                nums[0].IsEqualTo(1);
-                nums[1].IsEqualTo(2);
-                nums[2].IsEqualTo(3);
-                nums.Count.IsEqualTo(3);
+                Assert.Equal(1, nums[0]);
+                Assert.Equal(2, nums[1]);
+                Assert.Equal(3, nums[2]);
+                Assert.Equal(3, nums.Count);
             }
             finally
             {
                 try
                 {
-                    connection.Execute("DROP PROC get_ints");
+                    try { connection.Execute("DROP PROC get_ints"); } catch { }
                 }
                 finally
                 {
-                    connection.Execute("DROP TYPE int_list_type");
+                    try { connection.Execute("DROP TYPE int_list_type"); } catch { }
                 }
             }
         }
@@ -285,27 +362,12 @@ namespace Dapper.Tests
             {
                 base.AddParameters(command, identity);
 
-                var sqlCommand = (SqlCommand)command;
-                sqlCommand.CommandType = CommandType.StoredProcedure;
+                command.CommandType = CommandType.StoredProcedure;
 
-                var number_list = new List<Microsoft.SqlServer.Server.SqlDataRecord>();
-
-                // Create an SqlMetaData object that describes our table type.
-                Microsoft.SqlServer.Server.SqlMetaData[] tvp_definition = { new Microsoft.SqlServer.Server.SqlMetaData("n", SqlDbType.Int) };
-
-                foreach (int n in numbers)
-                {
-                    // Create a new record, using the metadata array above.
-                    var rec = new Microsoft.SqlServer.Server.SqlDataRecord(tvp_definition);
-                    rec.SetInt32(0, n);    // Set the value.
-                    number_list.Add(rec);      // Add it to the list.
-                }
+                var number_list = CreateSqlDataRecordList(command, numbers);
 
                 // Add the table parameter.
-                var p = sqlCommand.Parameters.Add("ints", SqlDbType.Structured);
-                p.Direction = ParameterDirection.Input;
-                p.TypeName = "int_list_type";
-                p.Value = number_list;
+                AddStructured(command, number_list);
             }
         }
 
@@ -315,19 +377,19 @@ namespace Dapper.Tests
             try
             {
                 connection.Execute("CREATE TYPE int_list_type AS TABLE (n int NOT NULL PRIMARY KEY)");
-                connection.Execute("CREATE PROC get_values @ints int_list_type READONLY, @stringParam varchar(20), @dateParam datetime AS select i.*, @stringParam as stringParam, @dateParam as dateParam from @ints i");
+                connection.Execute("CREATE PROC get_values @integers int_list_type READONLY, @stringParam varchar(20), @dateParam datetime AS select i.*, @stringParam as stringParam, @dateParam as dateParam from @integers i");
 
                 var dynamicParameters = new DynamicParameterWithIntTVP(new int[] { 1, 2, 3 });
                 dynamicParameters.AddDynamicParams(new { stringParam = "stringParam", dateParam = new DateTime(2012, 1, 1) });
 
                 var results = connection.Query("get_values", dynamicParameters, commandType: CommandType.StoredProcedure).ToList();
-                results.Count.IsEqualTo(3);
+                Assert.Equal(3, results.Count);
                 for (int i = 0; i < results.Count; i++)
                 {
                     var result = results[i];
-                    Assert.IsEqualTo(i + 1, result.n);
-                    Assert.IsEqualTo("stringParam", result.stringParam);
-                    Assert.IsEqualTo(new DateTime(2012, 1, 1), result.dateParam);
+                    Assert.Equal(i + 1, result.n);
+                    Assert.Equal("stringParam", result.stringParam);
+                    Assert.Equal(new DateTime(2012, 1, 1), result.dateParam);
                 }
             }
             finally
@@ -335,6 +397,123 @@ namespace Dapper.Tests
                 try
                 {
                     connection.Execute("DROP PROC get_values");
+                }
+                finally
+                {
+                    connection.Execute("DROP TYPE int_list_type");
+                }
+            }
+        }
+
+        [Fact]
+        public void TestSqlDataRecordListParametersWithAsTableValuedParameter()
+        {
+            try
+            {
+                connection.Execute("CREATE TYPE int_list_type AS TABLE (n int NOT NULL PRIMARY KEY)");
+                connection.Execute("CREATE PROC get_ints @integers int_list_type READONLY AS select * from @integers");
+
+                var records = CreateSqlDataRecordList(connection, new int[] { 1, 2, 3 });
+
+                var nums = connection.Query<int>("get_ints", new { integers = records.AsTableValuedParameter() }, commandType: CommandType.StoredProcedure).ToList();
+                Assert.Equal(new int[] { 1, 2, 3 }, nums);
+
+                nums = connection.Query<int>("select * from @integers", new { integers = records.AsTableValuedParameter("int_list_type") }).ToList();
+                Assert.Equal(new int[] { 1, 2, 3 }, nums);
+
+                try
+                {
+                    connection.Query<int>("select * from @integers", new { integers = records.AsTableValuedParameter() }).First();
+                    throw new InvalidOperationException();
+                }
+                catch (Exception ex)
+                {
+                    ex.Message.Equals("The table type parameter 'ids' must have a valid type name.");
+                }
+            }
+            finally
+            {
+                try
+                {
+                    connection.Execute("DROP PROC get_ints");
+                }
+                finally
+                {
+                    connection.Execute("DROP TYPE int_list_type");
+                }
+            }
+        }
+
+        [Fact]
+        public void TestEmptySqlDataRecordListParametersWithAsTableValuedParameter()
+        {
+            try
+            {
+                connection.Execute("CREATE TYPE int_list_type AS TABLE (n int NOT NULL PRIMARY KEY)");
+                connection.Execute("CREATE PROC get_ints @integers int_list_type READONLY AS select * from @integers");
+
+
+                var emptyRecord = CreateSqlDataRecordList(connection, Enumerable.Empty<int>());
+
+                var nums = connection.Query<int>("get_ints", new { integers = emptyRecord.AsTableValuedParameter() }, commandType: CommandType.StoredProcedure).ToList();
+                Assert.True(nums.Count == 0);
+            }
+            finally
+            {
+                try
+                {
+                    connection.Execute("DROP PROC get_ints");
+                }
+                finally
+                {
+                    connection.Execute("DROP TYPE int_list_type");
+                }
+            }
+        }
+
+        [Fact]
+        public void TestSqlDataRecordListParametersWithTypeHandlers()
+        {
+            try
+            {
+                connection.Execute("CREATE TYPE int_list_type AS TABLE (n int NOT NULL PRIMARY KEY)");
+                connection.Execute("CREATE PROC get_ints @integers int_list_type READONLY AS select * from @integers");
+
+                // Variable type has to be IEnumerable<SqlDataRecord> for TypeHandler to kick in.
+                object args;
+                if (connection is System.Data.SqlClient.SqlConnection)
+                {
+                    IEnumerable<Microsoft.SqlServer.Server.SqlDataRecord> records = CreateSqlDataRecordList_SD(new int[] { 1, 2, 3 });
+                    args = new { integers = records };
+                }
+                else if (connection is Microsoft.Data.SqlClient.SqlConnection)
+                {
+                    IEnumerable<Microsoft.Data.SqlClient.Server.SqlDataRecord> records = CreateSqlDataRecordList_MD(new int[] { 1, 2, 3 });
+                    args = new { integers = records };
+                }
+                else
+                {
+                    throw new ArgumentException(nameof(connection));
+                }
+
+                var nums = connection.Query<int>("get_ints", args, commandType: CommandType.StoredProcedure).ToList();
+                Assert.Equal(new int[] { 1, 2, 3 }, nums);
+
+                try
+                {
+                    connection.Query<int>("select * from @integers", args).First();
+                    throw new InvalidOperationException();
+                }
+                catch (Exception ex)
+                {
+                    ex.Message.Equals("The table type parameter 'ids' must have a valid type name.");
+                }
+            }
+            finally
+            {
+                try
+                {
+                    connection.Execute("DROP PROC get_ints");
                 }
                 finally
                 {
@@ -358,10 +537,10 @@ namespace Dapper.Tests
             var table = new DataTable { Columns = { { "id", typeof(int) } }, Rows = { { 1 }, { 2 }, { 3 } } };
 
             int count = connection.Query<int>("#DataTableParameters", new { ids = table.AsTableValuedParameter() }, commandType: CommandType.StoredProcedure).First();
-            count.IsEqualTo(3);
+            Assert.Equal(3, count);
 
             count = connection.Query<int>("select count(1) from @ids", new { ids = table.AsTableValuedParameter("MyTVPType") }).First();
-            count.IsEqualTo(3);
+            Assert.Equal(3, count);
 
             try
             {
@@ -383,17 +562,17 @@ namespace Dapper.Tests
             connection.Execute("create type MyTVPType as table (id int)");
             connection.Execute("create proc #DataTableParameters @ids MyTVPType readonly as select count(1) from @ids");
 
-            var table = new DataTable { TableName="MyTVPType", Columns = { { "id", typeof(int) } }, Rows = { { 1 }, { 2 }, { 3 } } };
+            var table = new DataTable { TableName = "MyTVPType", Columns = { { "id", typeof(int) } }, Rows = { { 1 }, { 2 }, { 3 } } };
             table.SetTypeName(table.TableName); // per SO29533765
-            IDictionary<string, object> args = new Dictionary<string, object>
+            IDictionary<string, object> args = new Dictionary<string, object>(1)
             {
                 ["ids"] = table
             };
             int count = connection.Query<int>("#DataTableParameters", args, commandType: CommandType.StoredProcedure).First();
-            count.IsEqualTo(3);
+            Assert.Equal(3, count);
 
             count = connection.Query<int>("select count(1) from @ids", args).First();
-            count.IsEqualTo(3);
+            Assert.Equal(3, count);
         }
 
         [Fact]
@@ -414,7 +593,7 @@ namespace Dapper.Tests
             declare @tmp table(id int not null);
             insert @tmp (id) values(1), (2), (3), (4), (5), (6), (7);
             select * from @tmp t inner join @ids i on i.id = t.id", new { ids }).Sum();
-            sum.IsEqualTo(9);
+            Assert.Equal(9, sum);
         }
 
         [Fact]
@@ -432,10 +611,10 @@ namespace Dapper.Tests
             var table = new DataTable { Columns = { { "id", typeof(int) } }, Rows = { { 1 }, { 2 }, { 3 } } };
             table.SetTypeName("MyTVPType"); // <== extended metadata
             int count = connection.Query<int>("#DataTableParameters", new { ids = table }, commandType: CommandType.StoredProcedure).First();
-            count.IsEqualTo(3);
+            Assert.Equal(3, count);
 
             count = connection.Query<int>("select count(1) from @ids", new { ids = table }).First();
-            count.IsEqualTo(3);
+            Assert.Equal(3, count);
 
             try
             {
@@ -452,8 +631,8 @@ namespace Dapper.Tests
         public void SupportInit()
         {
             var obj = connection.Query<WithInit>("select 'abc' as Value").Single();
-            obj.Value.Equals("abc");
-            obj.Flags.Equals(31);
+            Assert.Equal("abc", obj.Value);
+            Assert.Equal(31, obj.Flags);
         }
 
         public class WithInit : ISupportInitialize
@@ -477,7 +656,7 @@ namespace Dapper.Tests
             int val = connection.Query<int>("#SO29596645_Proc", obj.Rules, commandType: CommandType.StoredProcedure).Single();
 
             // 4 + 9 + 7 = 20
-            val.IsEqualTo(20);
+            Assert.Equal(20, val);
         }
 
         private class SO29596645_RuleTableValuedParameters : SqlMapper.IDynamicParameters
@@ -491,16 +670,21 @@ namespace Dapper.Tests
 
             public void AddParameters(IDbCommand command, SqlMapper.Identity identity)
             {
-                Console.WriteLine("> AddParameters");
-                var lazy = (SqlCommand)command;
-                lazy.Parameters.AddWithValue("Id", 7);
+                Debug.WriteLine("> AddParameters");
+                var p = command.CreateParameter();
+                p.ParameterName = "Id";
+                p.Value = 7;
+                command.Parameters.Add(p);
                 var table = new DataTable
                 {
                     Columns = { { "Id", typeof(int) } },
                     Rows = { { 4 }, { 9 } }
                 };
-                lazy.Parameters.AddWithValue("Rules", table);
-                Console.WriteLine("< AddParameters");
+                p = command.CreateParameter();
+                p.ParameterName = "Rules";
+                p.Value = table;
+                command.Parameters.Add(p);
+                Debug.WriteLine("< AddParameters");
             }
         }
 
@@ -513,7 +697,6 @@ namespace Dapper.Tests
                 Rules = new SO29596645_RuleTableValuedParameters("@Rules");
             }
         }
-#endif
 
 #if ENTITY_FRAMEWORK
         private class HazGeo
@@ -533,6 +716,8 @@ namespace Dapper.Tests
         [Fact]
         public void DBGeography_SO24405645_SO24402424()
         {
+            SkipIfMsDataClient();
+
             EntityFramework.Handlers.Register();
 
             connection.Execute("create table #Geo (id int, geo geography, geometry geometry)");
@@ -545,15 +730,17 @@ namespace Dapper.Tests
             };
             connection.Execute("insert #Geo(id, geo, geometry) values (@Id, @Geo, @Geometry)", obj);
             var row = connection.Query<HazGeo>("select * from #Geo where id=1").SingleOrDefault();
-            row.IsNotNull();
-            row.Id.IsEqualTo(1);
-            row.Geo.IsNotNull();
-            row.Geometry.IsNotNull();
+            Assert.NotNull(row);
+            Assert.Equal(1, row.Id);
+            Assert.NotNull(row.Geo);
+            Assert.NotNull(row.Geometry);
         }
 
         [Fact]
         public void SqlGeography_SO25538154()
         {
+            SkipIfMsDataClient();
+
             SqlMapper.ResetTypeHandlers();
             connection.Execute("create table #SqlGeo (id int, geo geography, geometry geometry)");
 
@@ -565,10 +752,10 @@ namespace Dapper.Tests
             };
             connection.Execute("insert #SqlGeo(id, geo, geometry) values (@Id, @Geo, @Geometry)", obj);
             var row = connection.Query<HazSqlGeo>("select * from #SqlGeo where id=1").SingleOrDefault();
-            row.IsNotNull();
-            row.Id.IsEqualTo(1);
-            row.Geo.IsNotNull();
-            row.Geometry.IsNotNull();
+            Assert.NotNull(row);
+            Assert.Equal(1, row.Id);
+            Assert.NotNull(row.Geo);
+            Assert.NotNull(row.Geometry);
         }
 
         [Fact]
@@ -584,21 +771,23 @@ namespace Dapper.Tests
             };
             connection.Execute("insert #SqlNullableGeo(id, geometry) values (@Id, @Geometry)", obj);
             var row = connection.Query<HazSqlGeo>("select * from #SqlNullableGeo where id=1").SingleOrDefault();
-            row.IsNotNull();
-            row.Id.IsEqualTo(1);
-            row.Geometry.IsNull();
+            Assert.NotNull(row);
+            Assert.Equal(1, row.Id);
+            Assert.Null(row.Geometry);
         }
 
         [Fact]
         public void SqlHierarchyId_SO18888911()
         {
-            Dapper.SqlMapper.ResetTypeHandlers();
+            SkipIfMsDataClient();
+
+            SqlMapper.ResetTypeHandlers();
             var row = connection.Query<HazSqlHierarchy>("select 3 as [Id], hierarchyid::Parse('/1/2/3/') as [Path]").Single();
-            row.Id.Equals(3);
-            row.Path.IsNotNull();
+            Assert.Equal(3, row.Id);
+            Assert.NotEqual(default(SqlHierarchyId), row.Path);
 
             var val = connection.Query<SqlHierarchyId>("select @Path", row).Single();
-            val.IsNotNull();
+            Assert.NotEqual(default(SqlHierarchyId), val);
         }
 
         public class HazSqlHierarchy
@@ -613,14 +802,14 @@ namespace Dapper.Tests
         public void TestCustomParameters()
         {
             var args = new DbParams {
-                new SqlParameter("foo", 123),
-                new SqlParameter("bar", "abc")
+                Provider.CreateRawParameter("foo", 123),
+                Provider.CreateRawParameter("bar", "abc")
             };
             var result = connection.Query("select Foo=@foo, Bar=@bar", args).Single();
             int foo = result.Foo;
             string bar = result.Bar;
-            foo.IsEqualTo(123);
-            bar.IsEqualTo("abc");
+            Assert.Equal(123, foo);
+            Assert.Equal("abc", bar);
         }
 
         [Fact]
@@ -631,7 +820,7 @@ namespace Dapper.Tests
             p.Add("@b", dbType: DbType.Int32, direction: ParameterDirection.Output);
             connection.Execute("select @b = null", p);
 
-            p.Get<int?>("@b").IsNull();
+            Assert.Null(p.Get<int?>("@b"));
         }
 
         [Fact]
@@ -643,16 +832,16 @@ namespace Dapper.Tests
 
             var result = connection.Query("select @A a,@B b,@C c,@D d", p).Single();
 
-            ((int)result.a).IsEqualTo(1);
-            ((int)result.b).IsEqualTo(2);
-            ((int)result.c).IsEqualTo(3);
-            ((int)result.d).IsEqualTo(4);
+            Assert.Equal(1, (int)result.a);
+            Assert.Equal(2, (int)result.b);
+            Assert.Equal(3, (int)result.c);
+            Assert.Equal(4, (int)result.d);
         }
 
         [Fact]
         public void TestAppendingADictionary()
         {
-            var dictionary = new Dictionary<string, object>
+            var dictionary = new Dictionary<string, object>(2)
             {
                 ["A"] = 1,
                 ["B"] = "two"
@@ -663,8 +852,8 @@ namespace Dapper.Tests
 
             var result = connection.Query("select @A a, @B b", p).Single();
 
-            ((int)result.a).IsEqualTo(1);
-            ((string)result.b).IsEqualTo("two");
+            Assert.Equal(1, (int)result.a);
+            Assert.Equal("two", (string)result.b);
         }
 
         [Fact]
@@ -679,8 +868,8 @@ namespace Dapper.Tests
 
             var result = connection.Query("select @A a, @B b", p).Single();
 
-            ((int)result.a).IsEqualTo(1);
-            ((string)result.b).IsEqualTo("two");
+            Assert.Equal(1, (int)result.a);
+            Assert.Equal("two", (string)result.b);
         }
 
         [Fact]
@@ -692,9 +881,9 @@ namespace Dapper.Tests
 
             var result = connection.Query<int>("select * from (select 1 A union all select 2 union all select 3) X where A in @list", p).ToList();
 
-            result[0].IsEqualTo(1);
-            result[1].IsEqualTo(2);
-            result[2].IsEqualTo(3);
+            Assert.Equal(1, result[0]);
+            Assert.Equal(2, result[1]);
+            Assert.Equal(3, result[2]);
         }
 
         [Fact]
@@ -702,14 +891,14 @@ namespace Dapper.Tests
         {
             var p = new DynamicParameters();
             var list = new int[] { 1, 2, 3 };
-            var args = new Dictionary<string, object> { ["ids"] = list };
+            var args = new Dictionary<string, object>(1) { ["ids"] = list };
             p.AddDynamicParams(args);
 
             var result = connection.Query<int>("select * from (select 1 A union all select 2 union all select 3) X where A in @ids", p).ToList();
 
-            result[0].IsEqualTo(1);
-            result[1].IsEqualTo(2);
-            result[2].IsEqualTo(3);
+            Assert.Equal(1, result[0]);
+            Assert.Equal(2, result[1]);
+            Assert.Equal(3, result[2]);
         }
 
         [Fact]
@@ -721,9 +910,9 @@ namespace Dapper.Tests
 
             var result = connection.Query<int>("select * from (select 1 A union all select 2 union all select 3) X where A in @ids", p).ToList();
 
-            result[0].IsEqualTo(1);
-            result[1].IsEqualTo(2);
-            result[2].IsEqualTo(3);
+            Assert.Equal(1, result[0]);
+            Assert.Equal(2, result[1]);
+            Assert.Equal(3, result[2]);
         }
 
         [Fact]
@@ -738,13 +927,13 @@ from(
 where y.x in @vals
 option (optimize for (@vals unKnoWn))";
             int count = connection.Query<int>(sql, new { vals = new[] { 1, 2, 3, 4 } }).Single();
-            count.IsEqualTo(2);
+            Assert.Equal(2, count);
 
             count = connection.Query<int>(sql, new { vals = new[] { 1 } }).Single();
-            count.IsEqualTo(1);
+            Assert.Equal(1, count);
 
             count = connection.Query<int>(sql, new { vals = new int[0] }).Single();
-            count.IsEqualTo(0);
+            Assert.Equal(0, count);
         }
 
         [Fact]
@@ -759,7 +948,7 @@ option (optimize for (@vals unKnoWn))";
     BEGIN
     SELECT @a
     END");
-            connection.Query<TimeSpan>("#TestProcWithTimeParameter", p, commandType: CommandType.StoredProcedure).First().IsEqualTo(new TimeSpan(10, 0, 0));
+            Assert.Equal(connection.Query<TimeSpan>("#TestProcWithTimeParameter", p, commandType: CommandType.StoredProcedure).First(), new TimeSpan(10, 0, 0));
         }
 
         [Fact]
@@ -767,7 +956,7 @@ option (optimize for (@vals unKnoWn))";
         {
             var guid = Guid.NewGuid();
             var result = connection.Query<Guid>("declare @foo uniqueidentifier set @foo = @guid select @foo", new { guid }).Single();
-            result.IsEqualTo(guid);
+            Assert.Equal(guid, result);
         }
 
         [Fact]
@@ -775,7 +964,7 @@ option (optimize for (@vals unKnoWn))";
         {
             Guid? guid = Guid.NewGuid();
             var result = connection.Query<Guid?>("declare @foo uniqueidentifier set @foo = @guid select @foo", new { guid }).Single();
-            result.IsEqualTo(guid);
+            Assert.Equal(guid, result);
         }
 
         [Fact]
@@ -783,7 +972,7 @@ option (optimize for (@vals unKnoWn))";
         {
             Guid? guid = null;
             var result = connection.Query<Guid?>("declare @foo uniqueidentifier set @foo = @guid select @foo", new { guid }).Single();
-            result.IsEqualTo(guid);
+            Assert.Equal(guid, result);
         }
 
         [Fact]
@@ -793,9 +982,8 @@ option (optimize for (@vals unKnoWn))";
             p.Add("name", "bob");
             p.Add("age", dbType: DbType.Int32, direction: ParameterDirection.Output);
 
-            connection.Query<string>("set @age = 11 select @name", p).First().IsEqualTo("bob");
-
-            p.Get<int>("age").IsEqualTo(11);
+            Assert.Equal("bob", connection.Query<string>("set @age = 11 select @name", p).First());
+            Assert.Equal(11, p.Get<int>("age"));
         }
 
         [Fact]
@@ -817,11 +1005,11 @@ SET @NumberOfLegs = @NumberOfLegs - 1
 SET @AddressName = 'bobs burgers'
 SET @AddressPersonId = @PersonId", p);
 
-            bob.Occupation.IsEqualTo("grillmaster");
-            bob.PersonId.IsEqualTo(2);
-            bob.NumberOfLegs.IsEqualTo(1);
-            bob.Address.Name.IsEqualTo("bobs burgers");
-            bob.Address.PersonId.IsEqualTo(2);
+            Assert.Equal("grillmaster", bob.Occupation);
+            Assert.Equal(2, bob.PersonId);
+            Assert.Equal(1, bob.NumberOfLegs);
+            Assert.Equal("bobs burgers", bob.Address.Name);
+            Assert.Equal(2, bob.Address.PersonId);
         }
 
         [Fact]
@@ -846,12 +1034,12 @@ SET @AddressName = 'bobs burgers'
 SET @AddressPersonId = @PersonId
 select 42", p);
 
-                bob.Occupation.IsEqualTo("grillmaster");
-                bob.PersonId.IsEqualTo(2);
-                bob.NumberOfLegs.IsEqualTo(1);
-                bob.Address.Name.IsEqualTo("bobs burgers");
-                bob.Address.PersonId.IsEqualTo(2);
-                result.IsEqualTo(42);
+                Assert.Equal("grillmaster", bob.Occupation);
+                Assert.Equal(2, bob.PersonId);
+                Assert.Equal(1, bob.NumberOfLegs);
+                Assert.Equal("bobs burgers", bob.Address.Name);
+                Assert.Equal(2, bob.Address.PersonId);
+                Assert.Equal(42, result);
             }
         }
 
@@ -877,12 +1065,12 @@ SET @AddressName = 'bobs burgers'
 SET @AddressPersonId = @PersonId
 select 42", p, buffered: true).Single();
 
-                bob.Occupation.IsEqualTo("grillmaster");
-                bob.PersonId.IsEqualTo(2);
-                bob.NumberOfLegs.IsEqualTo(1);
-                bob.Address.Name.IsEqualTo("bobs burgers");
-                bob.Address.PersonId.IsEqualTo(2);
-                result.IsEqualTo(42);
+                Assert.Equal("grillmaster", bob.Occupation);
+                Assert.Equal(2, bob.PersonId);
+                Assert.Equal(1, bob.NumberOfLegs);
+                Assert.Equal("bobs burgers", bob.Address.Name);
+                Assert.Equal(2, bob.Address.PersonId);
+                Assert.Equal(42, result);
             }
         }
 
@@ -908,12 +1096,12 @@ SET @AddressName = 'bobs burgers'
 SET @AddressPersonId = @PersonId
 select 42", p, buffered: false).Single();
 
-                bob.Occupation.IsEqualTo("grillmaster");
-                bob.PersonId.IsEqualTo(2);
-                bob.NumberOfLegs.IsEqualTo(1);
-                bob.Address.Name.IsEqualTo("bobs burgers");
-                bob.Address.PersonId.IsEqualTo(2);
-                result.IsEqualTo(42);
+                Assert.Equal("grillmaster", bob.Occupation);
+                Assert.Equal(2, bob.PersonId);
+                Assert.Equal(1, bob.NumberOfLegs);
+                Assert.Equal("bobs burgers", bob.Address.Name);
+                Assert.Equal(2, bob.Address.PersonId);
+                Assert.Equal(42, result);
             }
         }
 
@@ -945,13 +1133,13 @@ SET @AddressPersonId = @PersonId", p))
                     y = multi.Read<int>().Single();
                 }
 
-                bob.Occupation.IsEqualTo("grillmaster");
-                bob.PersonId.IsEqualTo(2);
-                bob.NumberOfLegs.IsEqualTo(1);
-                bob.Address.Name.IsEqualTo("bobs burgers");
-                bob.Address.PersonId.IsEqualTo(2);
-                x.IsEqualTo(42);
-                y.IsEqualTo(17);
+                Assert.Equal("grillmaster", bob.Occupation);
+                Assert.Equal(2, bob.PersonId);
+                Assert.Equal(1, bob.NumberOfLegs);
+                Assert.Equal("bobs burgers", bob.Address.Name);
+                Assert.Equal(2, bob.Address.PersonId);
+                Assert.Equal(42, x);
+                Assert.Equal(17, y);
             }
         }
 
@@ -962,7 +1150,7 @@ SET @AddressPersonId = @PersonId", p))
             p.name = "bob";
             object parameters = p;
             string result = connection.Query<string>("select @name", parameters).First();
-            result.IsEqualTo("bob");
+            Assert.Equal("bob", result);
         }
 
         [Fact]
@@ -978,7 +1166,7 @@ SET @AddressPersonId = @PersonId", p))
             var row = connection.Query<HazX>("SO25069578", parameters,
                 commandType: CommandType.StoredProcedure, transaction: tran).Single();
             tran.Rollback();
-            row.X.IsEqualTo("bar");
+            Assert.Equal("bar", row.X);
         }
 
         public class HazX
@@ -999,15 +1187,16 @@ insert @table values(5);
 insert @table values(6);
 insert @table values(7);
 SELECT value FROM @table WHERE value IN @myIds";
-            var queryParams = new Dictionary<string, object> {
-                ["myIds"] = new [] { 5, 6 }
+            var queryParams = new Dictionary<string, object>(1)
+            {
+                ["myIds"] = new[] { 5, 6 }
             };
 
             var dynamicParams = new DynamicParameters(queryParams);
             List<int> result = connection.Query<int>(query, dynamicParams).ToList();
-            result.Count.IsEqualTo(2);
-            result.Contains(5).IsTrue();
-            result.Contains(6).IsTrue();
+            Assert.Equal(2, result.Count);
+            Assert.Contains(5, result);
+            Assert.Contains(6, result);
         }
 
         [Fact]
@@ -1017,13 +1206,25 @@ SELECT value FROM @table WHERE value IN @myIds";
             args.AddDynamicParams(new { Foo = 123 });
             args.AddDynamicParams(new { Foo = 123 });
             int i = connection.Query<int>("select @Foo", args).Single();
-            i.IsEqualTo(123);
+            Assert.Equal(123, i);
+        }
+
+        [Fact]
+        public void Test_AddDynamicParametersRepeatedIfParamTypeIsDbStiringShouldWork()
+        {
+            var foo = new DbString() { Value = "123" };
+
+            var args = new DynamicParameters();
+            args.AddDynamicParams(new { Foo = foo });
+            args.AddDynamicParams(new { Foo = foo });
+            int i = connection.Query<int>("select @Foo", args).Single();
+            Assert.Equal(123, i);
         }
 
         [Fact]
         public void AllowIDictionaryParameters()
         {
-            var parameters = new Dictionary<string, object>
+            var parameters = new Dictionary<string, object>(1)
             {
                 ["param1"] = 0
             };
@@ -1058,8 +1259,8 @@ end");
         {
             var order = connection.Query<MultipleParametersWithIndexer>("select 1 A,2 B").First();
 
-            order.A.IsEqualTo(1);
-            order.B.IsEqualTo(2);
+            Assert.Equal(1, order.A);
+            Assert.Equal(2, order.B);
         }
 
         public class MultipleParametersWithIndexer : MultipleParametersWithIndexerDeclaringType
@@ -1094,9 +1295,9 @@ end");
             var result = connection.Execute("insert into #Dyno ([Id], [Name], [Foo]) values (@Id, @Name, @Foo);", orig);
 
             var fromDb = connection.Query<Dyno>("select * from #Dyno where Id=@Id", orig).Single();
-            ((Guid)fromDb.Id).IsEqualTo(guid);
-            fromDb.Name.IsEqualTo("T Rex");
-            ((long)fromDb.Foo).IsEqualTo(123L);
+            Assert.Equal((Guid)fromDb.Id, guid);
+            Assert.Equal("T Rex", fromDb.Name);
+            Assert.Equal(123L, (long)fromDb.Foo);
         }
 
         public class Dyno
@@ -1115,8 +1316,8 @@ end");
             args.Name = "abc";
 
             var row = connection.Query("select @Id as [Id], @Name as [Name]", (object)args).Single();
-            ((int)row.Id).Equals(123);
-            ((string)row.Name).Equals("abc");
+            Assert.Equal(123, (int)row.Id);
+            Assert.Equal("abc", (string)row.Name);
         }
 
         [Fact]
@@ -1126,10 +1327,10 @@ end");
             args.Id = 123;
             args.Name = "abc";
             connection.Execute("create table #issue151 (Id int not null, Name nvarchar(20) not null)");
-            connection.Execute("insert #issue151 values(@Id, @Name)", (object)args).IsEqualTo(1);
+            Assert.Equal(1, connection.Execute("insert #issue151 values(@Id, @Name)", (object)args));
             var row = connection.Query("select Id, Name from #issue151").Single();
-            ((int)row.Id).Equals(123);
-            ((string)row.Name).Equals("abc");
+            Assert.Equal(123, (int)row.Id);
+            Assert.Equal("abc", (string)row.Name);
         }
 
         [Fact]
@@ -1142,8 +1343,8 @@ declare @Issue192 table (
 insert @Issue192(Field_1) values (1), (2), (3);
 SELECT * FROM @Issue192 WHERE Field IN @Field AND Field_1 IN @Field_1",
     new { Field = new[] { 1, 2 }, Field_1 = new[] { 2, 3 } }).Single();
-            ((int)rows.Field).IsEqualTo(2);
-            ((int)rows.Field_1).IsEqualTo(2);
+            Assert.Equal(2, (int)rows.Field);
+            Assert.Equal(2, (int)rows.Field_1);
         }
 
         [Fact]
@@ -1156,16 +1357,18 @@ declare @Issue192 table (
 insert @Issue192(Field_1) values (1), (2), (3);
 SELECT * FROM @Issue192 WHERE Field IN @µ AND Field_1 IN @µµ",
     new { µ = new[] { 1, 2 }, µµ = new[] { 2, 3 } }).Single();
-            ((int)rows.Field).IsEqualTo(2);
-            ((int)rows.Field_1).IsEqualTo(2);
+            Assert.Equal(2, (int)rows.Field);
+            Assert.Equal(2, (int)rows.Field_1);
         }
 
         [FactUnlessCaseSensitiveDatabase]
         public void Issue220_InParameterCanBeSpecifiedInAnyCase()
         {
             // note this might fail if your database server is case-sensitive
-            connection.Query<int>("select * from (select 1 as Id) as X where Id in @ids", new { Ids = new[] { 1 } })
-                          .IsSequenceEqualTo(new[] { 1 });
+            Assert.Equal(
+                new[] { 1 },
+                connection.Query<int>("select * from (select 1 as Id) as X where Id in @ids", new { Ids = new[] { 1 } })
+            );
         }
 
         [Fact]
@@ -1174,7 +1377,7 @@ SELECT * FROM @Issue192 WHERE Field IN @µ AND Field_1 IN @µµ",
             var dbParams = new DynamicParameters();
             dbParams.Add("Field1", 1);
             var value = dbParams.Get<int>("Field1");
-            value.IsEqualTo(1);
+            Assert.Equal(1, value);
         }
 
         [Fact]
@@ -1199,7 +1402,7 @@ SELECT * FROM @Issue192 WHERE Field IN @µ AND Field_1 IN @µµ",
                 int count = connection.QuerySingle<int>("create table #splits (i int not null);"
                     + string.Concat(Enumerable.Range(-max, max * 3).Select(i => $"insert #splits (i) values ({i});"))
                     + "select count(1) from #splits");
-                count.IsEqualTo(3 * max);
+                Assert.Equal(count, 3 * max);
 
                 for (int i = 0; i < max; Incr(ref i))
                 {
@@ -1207,8 +1410,8 @@ SELECT * FROM @Issue192 WHERE Field IN @µ AND Field_1 IN @µµ",
                     {
                         var vals = Enumerable.Range(1, i);
                         var list = connection.Query<int>("select i from #splits where i in @vals", new { vals }).AsList();
-                        list.Count.IsEqualTo(i);
-                        list.Sum().IsEqualTo(vals.Sum());
+                        Assert.Equal(list.Count, i);
+                        Assert.Equal(list.Sum(), vals.Sum());
                     }
                     catch (Exception ex)
                     {
@@ -1236,13 +1439,13 @@ SELECT * FROM @Issue192 WHERE Field IN @µ AND Field_1 IN @µµ",
         {
             // regular parameter
             var result = connection.QuerySingle<int>("select @æøå٦", new { æøå٦ = 42 });
-            result.IsEqualTo(42);
+            Assert.Equal(42, result);
         }
 
-        [Fact]
+        [FactLongRunning]
         public void TestListExpansionPadding_Enabled() => TestListExpansionPadding(true);
 
-        [Fact]
+        [FactLongRunning]
         public void TestListExpansionPadding_Disabled() => TestListExpansionPadding(false);
 
         private void TestListExpansionPadding(bool enabled)
@@ -1251,7 +1454,7 @@ SELECT * FROM @Issue192 WHERE Field IN @µ AND Field_1 IN @µµ",
             try
             {
                 SqlMapper.Settings.PadListExpansions = enabled;
-                connection.ExecuteScalar<int>(@"
+                Assert.Equal(4096, connection.ExecuteScalar<int>(@"
 create table #ListExpansion(id int not null identity(1,1), value int null);
 insert #ListExpansion (value) values (null);
 declare @loop int = 0;
@@ -1261,7 +1464,7 @@ begin -- double it
 	set @loop = @loop + 1;
 end
 
-select count(1) as [Count] from #ListExpansion").IsEqualTo(4096);
+select count(1) as [Count] from #ListExpansion"));
 
                 var list = new List<int>();
                 int nextId = 1, batchCount;
@@ -1307,9 +1510,9 @@ select @hits as [Hits], (@count - @misses) as [Misses], @query as [Query];
             string query = row.Query;
             int argCount = Regex.Matches(query, "@ids[0-9]").Count;
             int expectedCount = GetExpectedListExpansionCount(list.Count, enabled);
-            hits.IsEqualTo(list.Count);
-            misses.IsEqualTo(list.Count);
-            argCount.IsEqualTo(expectedCount);
+            Assert.Equal(hits, list.Count);
+            Assert.Equal(misses, list.Count);
+            Assert.Equal(argCount, expectedCount);
         }
 
         private static int GetExpectedListExpansionCount(int count, bool enabled)

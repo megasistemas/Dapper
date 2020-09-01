@@ -1,5 +1,4 @@
-﻿#if ASYNC
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
@@ -13,7 +12,7 @@ namespace Dapper.Contrib.Extensions
     public static partial class SqlMapperExtensions
     {
         /// <summary>
-        /// Returns a single entity by a single id from table "Ts" asynchronously using .NET 4.5 Task. T must be of interface type. 
+        /// Returns a single entity by a single id from table "Ts" asynchronously using Task. T must be of interface type. 
         /// Id must be marked with [Key] attribute.
         /// Created entity is tracked/intercepted for changes and used by the Update() extension. 
         /// </summary>
@@ -35,13 +34,13 @@ namespace Dapper.Contrib.Extensions
                 GetQueries[type.TypeHandle] = sql;
             }
 
-            var dynParms = new DynamicParameters();
-            dynParms.Add("@id", id);
+            var dynParams = new DynamicParameters();
+            dynParams.Add("@id", id);
 
-            if (!type.IsInterface())
-                return (await connection.QueryAsync<T>(sql, dynParms, transaction, commandTimeout).ConfigureAwait(false)).FirstOrDefault();
+            if (!type.IsInterface)
+                return (await connection.QueryAsync<T>(sql, dynParams, transaction, commandTimeout).ConfigureAwait(false)).FirstOrDefault();
 
-            var res = (await connection.QueryAsync<dynamic>(sql, dynParms).ConfigureAwait(false)).FirstOrDefault() as IDictionary<string, object>;
+            var res = (await connection.QueryAsync<dynamic>(sql, dynParams).ConfigureAwait(false)).FirstOrDefault() as IDictionary<string, object>;
 
             if (res == null)
                 return null;
@@ -51,7 +50,16 @@ namespace Dapper.Contrib.Extensions
             foreach (var property in TypePropertiesCache(type))
             {
                 var val = res[property.Name];
-                property.SetValue(obj, Convert.ChangeType(val, property.PropertyType), null);
+                if (val == null) continue;
+                if (property.PropertyType.IsGenericType && property.PropertyType.GetGenericTypeDefinition() == typeof(Nullable<>))
+                {
+                    var genericType = Nullable.GetUnderlyingType(property.PropertyType);
+                    if (genericType != null) property.SetValue(obj, Convert.ChangeType(val, genericType), null);
+                }
+                else
+                {
+                    property.SetValue(obj, Convert.ChangeType(val, property.PropertyType), null);
+                }
             }
 
             ((IProxy)obj).IsDirty = false;   //reset change tracking and return
@@ -60,7 +68,7 @@ namespace Dapper.Contrib.Extensions
         }
 
         /// <summary>
-        /// Returns a list of entites from table "Ts".  
+        /// Returns a list of entities from table "Ts".  
         /// Id of T must be marked with [Key] attribute.
         /// Entities created from interfaces are tracked/intercepted for changes and used by the Update() extension
         /// for optimal performance. 
@@ -84,7 +92,7 @@ namespace Dapper.Contrib.Extensions
                 GetQueries[cacheType.TypeHandle] = sql;
             }
 
-            if (!type.IsInterface())
+            if (!type.IsInterface)
             {
                 return connection.QueryAsync<T>(sql, null, transaction, commandTimeout);
             }
@@ -93,7 +101,7 @@ namespace Dapper.Contrib.Extensions
 
         private static async Task<IEnumerable<T>> GetAllAsyncImpl<T>(IDbConnection connection, IDbTransaction transaction, int? commandTimeout, string sql, Type type) where T : class
         {
-            var result = await connection.QueryAsync(sql);
+            var result = await connection.QueryAsync(sql).ConfigureAwait(false);
             var list = new List<T>();
             foreach (IDictionary<string, object> res in result)
             {
@@ -101,7 +109,16 @@ namespace Dapper.Contrib.Extensions
                 foreach (var property in TypePropertiesCache(type))
                 {
                     var val = res[property.Name];
-                    property.SetValue(obj, Convert.ChangeType(val, property.PropertyType), null);
+                    if (val == null) continue;
+                    if (property.PropertyType.IsGenericType && property.PropertyType.GetGenericTypeDefinition() == typeof(Nullable<>))
+                    {
+                        var genericType = Nullable.GetUnderlyingType(property.PropertyType);
+                        if (genericType != null) property.SetValue(obj, Convert.ChangeType(val, genericType), null);
+                    }
+                    else
+                    {
+                        property.SetValue(obj, Convert.ChangeType(val, property.PropertyType), null);
+                    }
                 }
                 ((IProxy)obj).IsDirty = false;   //reset change tracking and return
                 list.Add(obj);
@@ -110,7 +127,7 @@ namespace Dapper.Contrib.Extensions
         }
 
         /// <summary>
-        /// Inserts an entity into table "Ts" asynchronously using .NET 4.5 Task and returns identity id.
+        /// Inserts an entity into table "Ts" asynchronously using Task and returns identity id.
         /// </summary>
         /// <typeparam name="T">The type being inserted.</typeparam>
         /// <param name="connection">Open SqlConnection</param>
@@ -131,16 +148,24 @@ namespace Dapper.Contrib.Extensions
                 isList = true;
                 type = type.GetElementType();
             }
-            else if (type.IsGenericType())
+            else if (type.IsGenericType)
             {
-                isList = true;
-                type = type.GetGenericArguments()[0];
+                var typeInfo = type.GetTypeInfo();
+                bool implementsGenericIEnumerableOrIsGenericIEnumerable =
+                    typeInfo.ImplementedInterfaces.Any(ti => ti.IsGenericType && ti.GetGenericTypeDefinition() == typeof(IEnumerable<>)) ||
+                    typeInfo.GetGenericTypeDefinition() == typeof(IEnumerable<>);
+
+                if (implementsGenericIEnumerableOrIsGenericIEnumerable)
+                {
+                    isList = true;
+                    type = type.GetGenericArguments()[0];
+                }
             }
 
             var name = GetTableName(type);
             var sbColumnList = new StringBuilder(null);
             var allProperties = TypePropertiesCache(type);
-            var keyProperties = KeyPropertiesCache(type);
+            var keyProperties = KeyPropertiesCache(type).ToList();
             var computedProperties = ComputedPropertiesCache(type);
             var allPropertiesExceptKeyAndComputed = allProperties.Except(keyProperties.Union(computedProperties)).ToList();
 
@@ -173,7 +198,7 @@ namespace Dapper.Contrib.Extensions
         }
 
         /// <summary>
-        /// Updates entity in table "Ts" asynchronously using .NET 4.5 Task, checks if the entity is modified if the entity is tracked by the Get() extension.
+        /// Updates entity in table "Ts" asynchronously using Task, checks if the entity is modified if the entity is tracked by the Get() extension.
         /// </summary>
         /// <typeparam name="T">Type to be updated</typeparam>
         /// <param name="connection">Open SqlConnection</param>
@@ -194,12 +219,20 @@ namespace Dapper.Contrib.Extensions
             {
                 type = type.GetElementType();
             }
-            else if (type.IsGenericType())
+            else if (type.IsGenericType)
             {
-                type = type.GetGenericArguments()[0];
+                var typeInfo = type.GetTypeInfo();
+                bool implementsGenericIEnumerableOrIsGenericIEnumerable =
+                    typeInfo.ImplementedInterfaces.Any(ti => ti.IsGenericType && ti.GetGenericTypeDefinition() == typeof(IEnumerable<>)) ||
+                    typeInfo.GetGenericTypeDefinition() == typeof(IEnumerable<>);
+
+                if (implementsGenericIEnumerableOrIsGenericIEnumerable)
+                {
+                    type = type.GetGenericArguments()[0];
+                }
             }
 
-            var keyProperties = KeyPropertiesCache(type);
+            var keyProperties = KeyPropertiesCache(type).ToList();
             var explicitKeyProperties = ExplicitKeyPropertiesCache(type);
             if (keyProperties.Count == 0 && explicitKeyProperties.Count == 0)
                 throw new ArgumentException("Entity must have at least one [Key] or [ExplicitKey] property");
@@ -221,7 +254,7 @@ namespace Dapper.Contrib.Extensions
                 var property = nonIdProps[i];
                 adapter.AppendColumnNameEqualsValue(sb, property.Name);
                 if (i < nonIdProps.Count - 1)
-                    sb.AppendFormat(", ");
+                    sb.Append(", ");
             }
             sb.Append(" where ");
             for (var i = 0; i < keyProperties.Count; i++)
@@ -229,14 +262,14 @@ namespace Dapper.Contrib.Extensions
                 var property = keyProperties[i];
                 adapter.AppendColumnNameEqualsValue(sb, property.Name);
                 if (i < keyProperties.Count - 1)
-                    sb.AppendFormat(" and ");
+                    sb.Append(" and ");
             }
             var updated = await connection.ExecuteAsync(sb.ToString(), entityToUpdate, commandTimeout: commandTimeout, transaction: transaction).ConfigureAwait(false);
             return updated > 0;
         }
 
         /// <summary>
-        /// Delete entity in table "Ts" asynchronously using .NET 4.5 Task.
+        /// Delete entity in table "Ts" asynchronously using Task.
         /// </summary>
         /// <typeparam name="T">Type of entity</typeparam>
         /// <param name="connection">Open SqlConnection</param>
@@ -255,9 +288,17 @@ namespace Dapper.Contrib.Extensions
             {
                 type = type.GetElementType();
             }
-            else if (type.IsGenericType())
+            else if (type.IsGenericType)
             {
-                type = type.GetGenericArguments()[0];
+                var typeInfo = type.GetTypeInfo();
+                bool implementsGenericIEnumerableOrIsGenericIEnumerable =
+                    typeInfo.ImplementedInterfaces.Any(ti => ti.IsGenericType && ti.GetGenericTypeDefinition() == typeof(IEnumerable<>)) ||
+                    typeInfo.GetGenericTypeDefinition() == typeof(IEnumerable<>);
+
+                if (implementsGenericIEnumerableOrIsGenericIEnumerable)
+                {
+                    type = type.GetGenericArguments()[0];
+                }
             }
 
             var keyProperties = KeyPropertiesCache(type);
@@ -266,24 +307,26 @@ namespace Dapper.Contrib.Extensions
                 throw new ArgumentException("Entity must have at least one [Key] or [ExplicitKey] property");
 
             var name = GetTableName(type);
-            keyProperties.AddRange(explicitKeyProperties);
+            var allKeyProperties = keyProperties.Concat(explicitKeyProperties).ToList();
 
             var sb = new StringBuilder();
             sb.AppendFormat("DELETE FROM {0} WHERE ", name);
 
-            for (var i = 0; i < keyProperties.Count; i++)
+            var adapter = GetFormatter(connection);
+
+            for (var i = 0; i < allKeyProperties.Count; i++)
             {
-                var property = keyProperties[i];
-                sb.AppendFormat("{0} = @{1}", property.Name, property.Name);
-                if (i < keyProperties.Count - 1)
-                    sb.AppendFormat(" AND ");
+                var property = allKeyProperties[i];
+                adapter.AppendColumnNameEqualsValue(sb, property.Name);
+                if (i < allKeyProperties.Count - 1)
+                    sb.Append(" AND ");
             }
             var deleted = await connection.ExecuteAsync(sb.ToString(), entityToDelete, transaction, commandTimeout).ConfigureAwait(false);
             return deleted > 0;
         }
 
         /// <summary>
-        /// Delete all entities in the table related to the type T asynchronously using .NET 4.5 Task.
+        /// Delete all entities in the table related to the type T asynchronously using Task.
         /// </summary>
         /// <typeparam name="T">Type of entity</typeparam>
         /// <param name="connection">Open SqlConnection</param>
@@ -314,7 +357,7 @@ public partial interface ISqlAdapter
     /// <param name="keyProperties">The key columns in this table.</param>
     /// <param name="entityToInsert">The entity to insert.</param>
     /// <returns>The Id of the row created.</returns>
-    Task<int> InsertAsync(IDbConnection connection, IDbTransaction transaction, int? commandTimeout, String tableName, string columnList, string parameterList, IEnumerable<PropertyInfo> keyProperties, object entityToInsert);
+    Task<int> InsertAsync(IDbConnection connection, IDbTransaction transaction, int? commandTimeout, string tableName, string columnList, string parameterList, IEnumerable<PropertyInfo> keyProperties, object entityToInsert);
 }
 
 public partial class SqlServerAdapter
@@ -331,12 +374,12 @@ public partial class SqlServerAdapter
     /// <param name="keyProperties">The key columns in this table.</param>
     /// <param name="entityToInsert">The entity to insert.</param>
     /// <returns>The Id of the row created.</returns>
-    public async Task<int> InsertAsync(IDbConnection connection, IDbTransaction transaction, int? commandTimeout, String tableName, string columnList, string parameterList, IEnumerable<PropertyInfo> keyProperties, object entityToInsert)
+    public async Task<int> InsertAsync(IDbConnection connection, IDbTransaction transaction, int? commandTimeout, string tableName, string columnList, string parameterList, IEnumerable<PropertyInfo> keyProperties, object entityToInsert)
     {
         var cmd = $"INSERT INTO {tableName} ({columnList}) values ({parameterList}); SELECT SCOPE_IDENTITY() id";
-        var multi = await connection.QueryMultipleAsync(cmd, entityToInsert, transaction, commandTimeout);
+        var multi = await connection.QueryMultipleAsync(cmd, entityToInsert, transaction, commandTimeout).ConfigureAwait(false);
 
-        var first = multi.Read().FirstOrDefault();
+        var first = await multi.ReadFirstOrDefaultAsync().ConfigureAwait(false);
         if (first == null || first.id == null) return 0;
 
         var id = (int)first.id;
@@ -456,7 +499,7 @@ public partial class PostgresAdapter
 
         var results = await connection.QueryAsync(sb.ToString(), entityToInsert, transaction, commandTimeout).ConfigureAwait(false);
 
-        // Return the key by assinging the corresponding property in the object - by product is that it supports compound primary keys
+        // Return the key by assigning the corresponding property in the object - by product is that it supports compound primary keys
         var id = 0;
         foreach (var p in propertyInfos)
         {
@@ -486,9 +529,9 @@ public partial class SQLiteAdapter
     public async Task<int> InsertAsync(IDbConnection connection, IDbTransaction transaction, int? commandTimeout, string tableName, string columnList, string parameterList, IEnumerable<PropertyInfo> keyProperties, object entityToInsert)
     {
         var cmd = $"INSERT INTO {tableName} ({columnList}) VALUES ({parameterList}); SELECT last_insert_rowid() id";
-        var multi = await connection.QueryMultipleAsync(cmd, entityToInsert, transaction, commandTimeout);
+        var multi = await connection.QueryMultipleAsync(cmd, entityToInsert, transaction, commandTimeout).ConfigureAwait(false);
 
-        var id = (int)multi.Read().First().id;
+        var id = (int)(await multi.ReadFirstAsync().ConfigureAwait(false)).id;
         var pi = keyProperties as PropertyInfo[] ?? keyProperties.ToArray();
         if (pi.Length == 0) return id;
 
@@ -516,11 +559,11 @@ public partial class FbAdapter
     public async Task<int> InsertAsync(IDbConnection connection, IDbTransaction transaction, int? commandTimeout, string tableName, string columnList, string parameterList, IEnumerable<PropertyInfo> keyProperties, object entityToInsert)
     {
         var cmd = $"insert into {tableName} ({columnList}) values ({parameterList})";
-        await connection.ExecuteAsync(cmd, entityToInsert, transaction, commandTimeout);
+        await connection.ExecuteAsync(cmd, entityToInsert, transaction, commandTimeout).ConfigureAwait(false);
 
         var propertyInfos = keyProperties as PropertyInfo[] ?? keyProperties.ToArray();
         var keyName = propertyInfos[0].Name;
-        var r = await connection.QueryAsync($"SELECT FIRST 1 {keyName} ID FROM {tableName} ORDER BY {keyName} DESC", transaction: transaction, commandTimeout: commandTimeout);
+        var r = await connection.QueryAsync($"SELECT FIRST 1 {keyName} ID FROM {tableName} ORDER BY {keyName} DESC", transaction: transaction, commandTimeout: commandTimeout).ConfigureAwait(false);
 
         var id = r.First().ID;
         if (id == null) return 0;
@@ -532,4 +575,3 @@ public partial class FbAdapter
         return Convert.ToInt32(id);
     }
 }
-#endif

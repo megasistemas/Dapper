@@ -1,5 +1,4 @@
-﻿#if ASYNC
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
@@ -35,7 +34,7 @@ namespace Dapper
             /// </summary>
             /// <param name="id">The Id of the record to update.</param>
             /// <param name="data">The new record.</param>
-            /// <returns>The number of affeced rows.</returns>
+            /// <returns>The number of affected rows.</returns>
             public Task<int> UpdateAsync(TId id, dynamic data)
             {
                 List<string> paramNames = GetParamNames((object)data);
@@ -89,7 +88,7 @@ namespace Dapper
         /// <param name="param">The parameters to use.</param>
         /// <returns>The number of rows affected.</returns>
         public Task<int> ExecuteAsync(string sql, dynamic param = null) =>
-            _connection.ExecuteAsync(sql, param as object, _transaction, this._commandTimeout);
+            _connection.ExecuteAsync(sql, param as object, _transaction, _commandTimeout);
 
         /// <summary>
         /// Asynchronously queries the current database.
@@ -190,7 +189,7 @@ namespace Dapper
             _connection.QueryAsync(sql, map, param as object, transaction, buffered, splitOn, commandTimeout);
 
         /// <summary>
-        /// Execute a query asynchronously using .NET 4.5 Task.
+        /// Execute a query asynchronously using Task.
         /// </summary>
         /// <param name="sql">The SQL to execute.</param>
         /// <param name="param">The parameters to use.</param>
@@ -210,4 +209,3 @@ namespace Dapper
             SqlMapper.QueryMultipleAsync(_connection, sql, param, transaction, commandTimeout, commandType);
     }
 }
-#endif

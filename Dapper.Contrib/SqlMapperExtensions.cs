@@ -6,14 +6,9 @@ using System.Reflection;
 using System.Text;
 using System.Collections.Concurrent;
 using System.Reflection.Emit;
+using System.Threading;
 
 using Dapper;
-
-#if COREFX
-using DataException = System.InvalidOperationException;
-#else
-using System.Threading;
-#endif
 
 namespace Dapper.Contrib.Extensions
 {
@@ -66,7 +61,7 @@ namespace Dapper.Contrib.Extensions
 
         private static readonly ISqlAdapter DefaultAdapter = new SqlServerAdapter();
         private static readonly Dictionary<string, ISqlAdapter> AdapterDictionary
-            = new Dictionary<string, ISqlAdapter>
+            = new Dictionary<string, ISqlAdapter>(6)
             {
                 ["sqlconnection"] = new SqlServerAdapter(),
                 ["sqlceconnection"] = new SqlCeServerAdapter(),
@@ -114,7 +109,7 @@ namespace Dapper.Contrib.Extensions
 
             if (keyProperties.Count == 0)
             {
-                var idProp = allProperties.FirstOrDefault(p => p.Name.ToLower() == "id");
+                var idProp = allProperties.Find(p => string.Equals(p.Name, "id", StringComparison.CurrentCultureIgnoreCase));
                 if (idProp != null && !idProp.GetCustomAttributes(true).Any(a => a is ExplicitKeyAttribute))
                 {
                     keyProperties.Add(idProp);
@@ -148,12 +143,12 @@ namespace Dapper.Contrib.Extensions
 
         private static PropertyInfo GetSingleKey<T>(string method)
         {
-            var type = typeof (T);
+            var type = typeof(T);
             var keys = KeyPropertiesCache(type);
             var explicitKeys = ExplicitKeyPropertiesCache(type);
             var keyCount = keys.Count + explicitKeys.Count;
             if (keyCount > 1)
-                throw new DataException($"{method}<T> only supports an entity with a single [Key] or [ExplicitKey] property");
+                throw new DataException($"{method}<T> only supports an entity with a single [Key] or [ExplicitKey] property. [Key] Count: {keys.Count}, [ExplicitKey] Count: {explicitKeys.Count}");
             if (keyCount == 0)
                 throw new DataException($"{method}<T> only supports an entity with a [Key] or an [ExplicitKey] property");
 
@@ -185,14 +180,14 @@ namespace Dapper.Contrib.Extensions
                 GetQueries[type.TypeHandle] = sql;
             }
 
-            var dynParms = new DynamicParameters();
-            dynParms.Add("@id", id);
+            var dynParams = new DynamicParameters();
+            dynParams.Add("@id", id);
 
             T obj;
 
-            if (type.IsInterface())
+            if (type.IsInterface)
             {
-                var res = connection.Query(sql, dynParms).FirstOrDefault() as IDictionary<string, object>;
+                var res = connection.Query(sql, dynParams).FirstOrDefault() as IDictionary<string, object>;
 
                 if (res == null)
                     return null;
@@ -202,23 +197,32 @@ namespace Dapper.Contrib.Extensions
                 foreach (var property in TypePropertiesCache(type))
                 {
                     var val = res[property.Name];
-                    property.SetValue(obj, Convert.ChangeType(val, property.PropertyType), null);
+                    if (val == null) continue;
+                    if (property.PropertyType.IsGenericType && property.PropertyType.GetGenericTypeDefinition() == typeof(Nullable<>))
+                    {
+                        var genericType = Nullable.GetUnderlyingType(property.PropertyType);
+                        if (genericType != null) property.SetValue(obj, Convert.ChangeType(val, genericType), null);
+                    }
+                    else
+                    {
+                        property.SetValue(obj, Convert.ChangeType(val, property.PropertyType), null);
+                    }
                 }
 
                 ((IProxy)obj).IsDirty = false;   //reset change tracking and return
             }
             else
             {
-                obj = connection.Query<T>(sql, dynParms, transaction, commandTimeout: commandTimeout).FirstOrDefault();
+                obj = connection.Query<T>(sql, dynParams, transaction, commandTimeout: commandTimeout).FirstOrDefault();
             }
             return obj;
         }
 
         /// <summary>
-        /// Returns a list of entites from table "Ts".  
+        /// Returns a list of entities from table "Ts".
         /// Id of T must be marked with [Key] attribute.
         /// Entities created from interfaces are tracked/intercepted for changes and used by the Update() extension
-        /// for optimal performance. 
+        /// for optimal performance.
         /// </summary>
         /// <typeparam name="T">Interface or type to create and populate</typeparam>
         /// <param name="connection">Open SqlConnection</param>
@@ -239,7 +243,7 @@ namespace Dapper.Contrib.Extensions
                 GetQueries[cacheType.TypeHandle] = sql;
             }
 
-            if (!type.IsInterface()) return connection.Query<T>(sql, null, transaction, commandTimeout: commandTimeout);
+            if (!type.IsInterface) return connection.Query<T>(sql, null, transaction, commandTimeout: commandTimeout);
 
             var result = connection.Query(sql);
             var list = new List<T>();
@@ -249,7 +253,16 @@ namespace Dapper.Contrib.Extensions
                 foreach (var property in TypePropertiesCache(type))
                 {
                     var val = res[property.Name];
-                    property.SetValue(obj, Convert.ChangeType(val, property.PropertyType), null);
+                    if (val == null) continue;
+                    if (property.PropertyType.IsGenericType && property.PropertyType.GetGenericTypeDefinition() == typeof(Nullable<>))
+                    {
+                        var genericType = Nullable.GetUnderlyingType(property.PropertyType);
+                        if (genericType != null) property.SetValue(obj, Convert.ChangeType(val, genericType), null);
+                    }
+                    else
+                    {
+                        property.SetValue(obj, Convert.ChangeType(val, property.PropertyType), null);
+                    }
                 }
                 ((IProxy)obj).IsDirty = false;   //reset change tracking and return
                 list.Add(obj);
@@ -272,20 +285,19 @@ namespace Dapper.Contrib.Extensions
             }
             else
             {
-                //NOTE: This as dynamic trick should be able to handle both our own Table-attribute as well as the one in EntityFramework 
-                var tableAttr = type
-#if COREFX
-                    .GetTypeInfo()
-#endif
-                    .GetCustomAttributes(false).SingleOrDefault(attr => attr.GetType().Name == "TableAttribute") as dynamic;
-                if (tableAttr != null)
+                //NOTE: This as dynamic trick falls back to handle both our own Table-attribute as well as the one in EntityFramework 
+                var tableAttrName =
+                    type.GetCustomAttribute<TableAttribute>(false)?.Name
+                    ?? (type.GetCustomAttributes(false).FirstOrDefault(attr => attr.GetType().Name == "TableAttribute") as dynamic)?.Name;
+
+                if (tableAttrName != null)
                 {
-                    name = tableAttr.Name;
+                    name = tableAttrName;
                 }
                 else
                 {
                     name = type.Name + "s";
-                    if (type.IsInterface() && name.StartsWith("I"))
+                    if (type.IsInterface && name.StartsWith("I"))
                         name = name.Substring(1);
                 }
             }
@@ -295,7 +307,7 @@ namespace Dapper.Contrib.Extensions
         }
 
         /// <summary>
-        /// Inserts an entity into table "Ts" and returns identity id or number if inserted rows if inserting a list.
+        /// Inserts an entity into table "Ts" and returns identity id or number of inserted rows if inserting a list.
         /// </summary>
         /// <typeparam name="T">The type to insert.</typeparam>
         /// <param name="connection">Open SqlConnection</param>
@@ -314,10 +326,18 @@ namespace Dapper.Contrib.Extensions
                 isList = true;
                 type = type.GetElementType();
             }
-            else if (type.IsGenericType())
+            else if (type.IsGenericType)
             {
-                isList = true;
-                type = type.GetGenericArguments()[0];
+                var typeInfo = type.GetTypeInfo();
+                bool implementsGenericIEnumerableOrIsGenericIEnumerable =
+                    typeInfo.ImplementedInterfaces.Any(ti => ti.IsGenericType && ti.GetGenericTypeDefinition() == typeof(IEnumerable<>)) ||
+                    typeInfo.GetGenericTypeDefinition() == typeof(IEnumerable<>);
+
+                if (implementsGenericIEnumerableOrIsGenericIEnumerable)
+                {
+                    isList = true;
+                    type = type.GetGenericArguments()[0];
+                }
             }
 
             var name = GetTableName(type);
@@ -387,9 +407,17 @@ namespace Dapper.Contrib.Extensions
             {
                 type = type.GetElementType();
             }
-            else if (type.IsGenericType())
+            else if (type.IsGenericType)
             {
-                type = type.GetGenericArguments()[0];
+                var typeInfo = type.GetTypeInfo();
+                bool implementsGenericIEnumerableOrIsGenericIEnumerable =
+                    typeInfo.ImplementedInterfaces.Any(ti => ti.IsGenericType && ti.GetGenericTypeDefinition() == typeof(IEnumerable<>)) ||
+                    typeInfo.GetGenericTypeDefinition() == typeof(IEnumerable<>);
+
+                if (implementsGenericIEnumerableOrIsGenericIEnumerable)
+                {
+                    type = type.GetGenericArguments()[0];
+                }
             }
 
             var keyProperties = KeyPropertiesCache(type).ToList();  //added ToList() due to issue #418, must work on a list copy
@@ -414,7 +442,7 @@ namespace Dapper.Contrib.Extensions
                 var property = nonIdProps[i];
                 adapter.AppendColumnNameEqualsValue(sb, property.Name);  //fix for issue #336
                 if (i < nonIdProps.Count - 1)
-                    sb.AppendFormat(", ");
+                    sb.Append(", ");
             }
             sb.Append(" where ");
             for (var i = 0; i < keyProperties.Count; i++)
@@ -422,7 +450,7 @@ namespace Dapper.Contrib.Extensions
                 var property = keyProperties[i];
                 adapter.AppendColumnNameEqualsValue(sb, property.Name);  //fix for issue #336
                 if (i < keyProperties.Count - 1)
-                    sb.AppendFormat(" and ");
+                    sb.Append(" and ");
             }
             var updated = connection.Execute(sb.ToString(), entityToUpdate, commandTimeout: commandTimeout, transaction: transaction);
             return updated > 0;
@@ -448,9 +476,17 @@ namespace Dapper.Contrib.Extensions
             {
                 type = type.GetElementType();
             }
-            else if (type.IsGenericType())
+            else if (type.IsGenericType)
             {
-                type = type.GetGenericArguments()[0];
+                var typeInfo = type.GetTypeInfo();
+                bool implementsGenericIEnumerableOrIsGenericIEnumerable =
+                    typeInfo.ImplementedInterfaces.Any(ti => ti.IsGenericType && ti.GetGenericTypeDefinition() == typeof(IEnumerable<>)) ||
+                    typeInfo.GetGenericTypeDefinition() == typeof(IEnumerable<>);
+
+                if (implementsGenericIEnumerableOrIsGenericIEnumerable)
+                {
+                    type = type.GetGenericArguments()[0];
+                }
             }
 
             var keyProperties = KeyPropertiesCache(type).ToList();  //added ToList() due to issue #418, must work on a list copy
@@ -471,7 +507,7 @@ namespace Dapper.Contrib.Extensions
                 var property = keyProperties[i];
                 adapter.AppendColumnNameEqualsValue(sb, property.Name);  //fix for issue #336
                 if (i < keyProperties.Count - 1)
-                    sb.AppendFormat(" and ");
+                    sb.Append(" and ");
             }
             var deleted = connection.Execute(sb.ToString(), entityToDelete, transaction, commandTimeout);
             return deleted > 0;
@@ -505,9 +541,9 @@ namespace Dapper.Contrib.Extensions
             var name = GetDatabaseType?.Invoke(connection).ToLower()
                        ?? connection.GetType().Name.ToLower();
 
-            return !AdapterDictionary.ContainsKey(name)
-                ? DefaultAdapter
-                : AdapterDictionary[name];
+            return AdapterDictionary.TryGetValue(name, out var adapter)
+                ? adapter
+                : DefaultAdapter;
         }
 
         private static class ProxyGenerator
@@ -516,7 +552,7 @@ namespace Dapper.Contrib.Extensions
 
             private static AssemblyBuilder GetAsmBuilder(string name)
             {
-#if COREFX
+#if NETSTANDARD2_0
                 return AssemblyBuilder.DefineDynamicAssembly(new AssemblyName { Name = name }, AssemblyBuilderAccess.Run);
 #else
                 return Thread.GetDomain().DefineDynamicAssembly(new AssemblyName { Name = name }, AssemblyBuilderAccess.Run);
@@ -551,7 +587,7 @@ namespace Dapper.Contrib.Extensions
                     CreateProperty<T>(typeBuilder, property.Name, property.PropertyType, setIsDirtyMethod, isId);
                 }
 
-#if COREFX
+#if NETSTANDARD2_0
                 var generatedType = typeBuilder.CreateTypeInfo().AsType();
 #else
                 var generatedType = typeBuilder.CreateType();
@@ -564,17 +600,17 @@ namespace Dapper.Contrib.Extensions
             private static MethodInfo CreateIsDirtyProperty(TypeBuilder typeBuilder)
             {
                 var propType = typeof(bool);
-                var field = typeBuilder.DefineField("_" + "IsDirty", propType, FieldAttributes.Private);
-                var property = typeBuilder.DefineProperty("IsDirty",
+                var field = typeBuilder.DefineField("_" + nameof(IProxy.IsDirty), propType, FieldAttributes.Private);
+                var property = typeBuilder.DefineProperty(nameof(IProxy.IsDirty),
                                                System.Reflection.PropertyAttributes.None,
                                                propType,
                                                new[] { propType });
 
-                const MethodAttributes getSetAttr = MethodAttributes.Public | MethodAttributes.NewSlot | MethodAttributes.SpecialName |
-                                                    MethodAttributes.Final | MethodAttributes.Virtual | MethodAttributes.HideBySig;
+                const MethodAttributes getSetAttr = MethodAttributes.Public | MethodAttributes.NewSlot | MethodAttributes.SpecialName
+                                                  | MethodAttributes.Final | MethodAttributes.Virtual | MethodAttributes.HideBySig;
 
                 // Define the "get" and "set" accessor methods
-                var currGetPropMthdBldr = typeBuilder.DefineMethod("get_" + "IsDirty",
+                var currGetPropMthdBldr = typeBuilder.DefineMethod("get_" + nameof(IProxy.IsDirty),
                                              getSetAttr,
                                              propType,
                                              Type.EmptyTypes);
@@ -582,7 +618,7 @@ namespace Dapper.Contrib.Extensions
                 currGetIl.Emit(OpCodes.Ldarg_0);
                 currGetIl.Emit(OpCodes.Ldfld, field);
                 currGetIl.Emit(OpCodes.Ret);
-                var currSetPropMthdBldr = typeBuilder.DefineMethod("set_" + "IsDirty",
+                var currSetPropMthdBldr = typeBuilder.DefineMethod("set_" + nameof(IProxy.IsDirty),
                                              getSetAttr,
                                              null,
                                              new[] { propType });
@@ -594,8 +630,8 @@ namespace Dapper.Contrib.Extensions
 
                 property.SetGetMethod(currGetPropMthdBldr);
                 property.SetSetMethod(currSetPropMthdBldr);
-                var getMethod = typeof(IProxy).GetMethod("get_" + "IsDirty");
-                var setMethod = typeof(IProxy).GetMethod("set_" + "IsDirty");
+                var getMethod = typeof(IProxy).GetMethod("get_" + nameof(IProxy.IsDirty));
+                var setMethod = typeof(IProxy).GetMethod("set_" + nameof(IProxy.IsDirty));
                 typeBuilder.DefineMethodOverride(currGetPropMthdBldr, getMethod);
                 typeBuilder.DefineMethodOverride(currSetPropMthdBldr, setMethod);
 
@@ -841,7 +877,7 @@ public partial class SqlCeServerAdapter : ISqlAdapter
         var r = connection.Query("select @@IDENTITY id", transaction: transaction, commandTimeout: commandTimeout).ToList();
 
         if (r[0].id == null) return 0;
-        var id = (int) r[0].id;
+        var id = (int)r[0].id;
 
         var propertyInfos = keyProperties as PropertyInfo[] ?? keyProperties.ToArray();
         if (propertyInfos.Length == 0) return id;
@@ -971,7 +1007,7 @@ public partial class PostgresAdapter : ISqlAdapter
 
         var results = connection.Query(sb.ToString(), entityToInsert, transaction, commandTimeout: commandTimeout).ToList();
 
-        // Return the key by assinging the corresponding property in the object - by product is that it supports compound primary keys
+        // Return the key by assigning the corresponding property in the object - by product is that it supports compound primary keys
         var id = 0;
         foreach (var p in propertyInfos)
         {
@@ -1058,7 +1094,7 @@ public partial class SQLiteAdapter : ISqlAdapter
 }
 
 /// <summary>
-/// The Firebase SQL adapeter.
+/// The Firebase SQL adapter.
 /// </summary>
 public partial class FbAdapter : ISqlAdapter
 {

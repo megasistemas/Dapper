@@ -1,32 +1,36 @@
+﻿#if NET4X
 using BenchmarkDotNet.Attributes;
 using Dapper.Tests.Performance.Linq2Sql;
 using System;
+using System.ComponentModel;
 using System.Data.Linq;
 using System.Linq;
 
 namespace Dapper.Tests.Performance
 {
+    [Description("LINQ to SQL")]
     public class Linq2SqlBenchmarks : BenchmarkBase
     {
         private DataClassesDataContext Linq2SqlContext;
+
         private static readonly Func<DataClassesDataContext, int, Linq2Sql.Post> compiledQuery =
             CompiledQuery.Compile((DataClassesDataContext ctx, int id) => ctx.Posts.First(p => p.Id == id));
 
-        [Setup]
+        [GlobalSetup]
         public void Setup()
         {
             BaseSetup();
             Linq2SqlContext = new DataClassesDataContext(_connection);
         }
 
-        [Benchmark(Description = "Normal")]
-        public Linq2Sql.Post Normal()
+        [Benchmark(Description = "First")]
+        public Linq2Sql.Post First()
         {
             Step();
             return Linq2SqlContext.Posts.First(p => p.Id == i);
         }
 
-        [Benchmark(Description = "Compiled")]
+        [Benchmark(Description = "First (Compiled)")]
         public Linq2Sql.Post Compiled()
         {
             Step();
@@ -41,3 +45,4 @@ namespace Dapper.Tests.Performance
         }
     }
 }
+#endif

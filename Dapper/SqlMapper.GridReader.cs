@@ -169,7 +169,7 @@ namespace Dapper
                 IsConsumed = true;
 
                 T result = default(T);
-                if(reader.Read() && reader.FieldCount != 0)
+                if (reader.Read() && reader.FieldCount != 0)
                 {
                     var typedIdentity = identity.ForGrid(type, gridIndex);
                     CacheInfo cache = GetCacheInfo(typedIdentity, null, addToCache);
@@ -194,7 +194,7 @@ namespace Dapper
                     if ((row & Row.Single) != 0 && reader.Read()) ThrowMultipleRows(row);
                     while (reader.Read()) { /* ignore subsequent rows */ }
                 }
-                else if((row & Row.FirstOrDefault) == 0) // demanding a row, and don't have one
+                else if ((row & Row.FirstOrDefault) == 0) // demanding a row, and don't have one
                 {
                     ThrowZeroRows(row);
                 }
@@ -204,15 +204,7 @@ namespace Dapper
 
             private IEnumerable<TReturn> MultiReadInternal<TFirst, TSecond, TThird, TFourth, TFifth, TSixth, TSeventh, TReturn>(Delegate func, string splitOn)
             {
-                var identity = this.identity.ForGrid(typeof(TReturn), new Type[] {
-                    typeof(TFirst),
-                    typeof(TSecond),
-                    typeof(TThird),
-                    typeof(TFourth),
-                    typeof(TFifth),
-                    typeof(TSixth),
-                    typeof(TSeventh)
-                }, gridIndex);
+                var identity = this.identity.ForGrid<TFirst, TSecond, TThird, TFourth, TFifth, TSixth, TSeventh>(typeof(TReturn), gridIndex);
 
                 IsConsumed = true;
 
@@ -372,9 +364,12 @@ namespace Dapper
                     while (index == gridIndex && reader.Read())
                     {
                         object val = deserializer(reader);
-                        if (val == null || val is T) {
+                        if (val == null || val is T)
+                        {
                             yield return (T)val;
-                        } else {
+                        }
+                        else
+                        {
                             yield return (T)Convert.ChangeType(val, convertToType, CultureInfo.InvariantCulture);
                         }
                     }

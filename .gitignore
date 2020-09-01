@@ -1,5 +1,6 @@
 /*.suo
 .vs/
+.vscode/
 bin/
 obj/
 /*.user
@@ -18,3 +19,5 @@ TestResults/
 Dapper.Tests/*.sdf
 Dapper.Tests/SqlServerTypes/
 .dotnet/*
+BenchmarkDotNet.Artifacts/
+.idea/

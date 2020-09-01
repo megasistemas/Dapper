@@ -1,14 +1,16 @@
-using BenchmarkDotNet.Attributes;
+﻿using BenchmarkDotNet.Attributes;
 using ServiceStack.OrmLite;
+using System.ComponentModel;
 using System.Data;
 
 namespace Dapper.Tests.Performance
 {
+    [Description("ServiceStack")]
     public class ServiceStackBenchmarks : BenchmarkBase
     {
         private IDbConnection _db;
 
-        [Setup]
+        [GlobalSetup]
         public void Setup()
         {
             BaseSetup();
@@ -16,7 +18,7 @@ namespace Dapper.Tests.Performance
             _db = dbFactory.Open();
         }
 
-        [Benchmark(Description = "SingleById")]
+        [Benchmark(Description = "SingleById<T>")]
         public Post Query()
         {
             Step();

@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Data;
-#if !COREFX
 namespace Dapper
 {
     internal sealed class DataTableHandler : SqlMapper.ITypeHandler
@@ -16,4 +15,3 @@ namespace Dapper
         }
     }
 }
-#endif
